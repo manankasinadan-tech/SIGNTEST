@@ -12,12 +12,27 @@ import java.security.interfaces.DSAPublicKey
 import java.security.interfaces.ECPublicKey
 import java.security.interfaces.RSAPublicKey
 import java.util.Date
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 import java.util.zip.CRC32
 
 object CryptoUtils {
 
     private const val BASE64_CHARS =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    private val KNOWN_CERT_SHA256 = mapOf(
+        // AOSP standard testkey
+        "a40da80a59d170caa950cf15c18c454d47a39b26989d8b640ecd745ba71bf5dc" to "AOSP TestKey (Platform)",
+        "27196e386b875e76adf700e7ea84e4c6eee33dfa" to "AOSP TestKey"
+    )
+
+    data class FileHashes(
+        val sha256: String,
+        val sha1: String,
+        val md5: String,
+        val crc32Hex: String
+    )
 
     fun encodeBase64(data: ByteArray): String {
         if (data.isEmpty()) return ""
@@ -50,6 +65,10 @@ object CryptoUtils {
         return sb.toString()
     }
 
+    fun toColonUpperHex(hexLower: String): String {
+        return hexLower.uppercase(Locale.US).chunked(2).joinToString(":")
+    }
+
     fun digestHex(bytes: ByteArray, algorithm: String): String {
         return try {
             val md = MessageDigest.getInstance(algorithm)
@@ -66,8 +85,9 @@ object CryptoUtils {
         return "%08x".format(value) to value
     }
 
-    fun computeFileHashes(file: File): Triple<String, String, String> {
+    fun computeFileHashes(file: File): FileHashes {
         val sha256 = MessageDigest.getInstance("SHA-256")
+        val sha1 = MessageDigest.getInstance("SHA-1")
         val md5 = MessageDigest.getInstance("MD5")
         val crc = CRC32()
         val buffer = ByteArray(64 * 1024)
@@ -76,11 +96,17 @@ object CryptoUtils {
                 val read = input.read(buffer)
                 if (read <= 0) break
                 sha256.update(buffer, 0, read)
+                sha1.update(buffer, 0, read)
                 md5.update(buffer, 0, read)
                 crc.update(buffer, 0, read)
             }
         }
-        return Triple(toHex(sha256.digest()), toHex(md5.digest()), "%08x".format(crc.value))
+        return FileHashes(
+            sha256 = toHex(sha256.digest()),
+            sha1 = toHex(sha1.digest()),
+            md5 = toHex(md5.digest()),
+            crc32Hex = "%08x".format(crc.value)
+        )
     }
 
     fun buildAndroidSignatureBase64(certEncoded: ByteArray): String {
@@ -146,9 +172,14 @@ object CryptoUtils {
             nowMs > notAfterMs -> ValidityStatus.EXPIRED
             else -> ValidityStatus.VALID
         }
+        val daysRemaining = TimeUnit.MILLISECONDS.toDays(notAfterMs - nowMs)
 
+        val sha1 = digestHex(encoded, "SHA-1")
+        val sha256 = digestHex(encoded, "SHA-256")
         val (pubSummary, pubAlg, pubBits) = formatPublicKeySummary(cert.publicKey)
         val spkiSha256 = digestHex(cert.publicKey.encoded ?: ByteArray(0), "SHA-256")
+
+        val knownHint = detectKnownSigner(subjectDn, sha256, sha1)
 
         return CertificateDetails(
             index = index,
@@ -163,6 +194,7 @@ object CryptoUtils {
             notBeforeMs = notBeforeMs,
             notAfterMs = notAfterMs,
             validityStatus = validityStatus,
+            daysRemaining = daysRemaining,
             sigAlgName = cert.sigAlgName ?: "Unknown",
             sigAlgOid = cert.sigAlgOID ?: "",
             hashCodeHex = hashCodeHex,
@@ -170,9 +202,11 @@ object CryptoUtils {
             crc32Hex = crcHex,
             crc32Long = crcLong,
             md5 = digestHex(encoded, "MD5"),
-            sha1 = digestHex(encoded, "SHA-1"),
+            sha1 = sha1,
+            sha1Colon = toColonUpperHex(sha1),
             sha224 = digestHex(encoded, "SHA-224"),
-            sha256 = digestHex(encoded, "SHA-256"),
+            sha256 = sha256,
+            sha256Colon = toColonUpperHex(sha256),
             sha384 = digestHex(encoded, "SHA-384"),
             sha512 = digestHex(encoded, "SHA-512"),
             certBase64 = encodeBase64(encoded),
@@ -186,8 +220,21 @@ object CryptoUtils {
             extendedKeyUsage = extractExtendedKeyUsage(cert),
             basicConstraints = extractBasicConstraints(cert),
             subjectKeyIdentifier = extractExtensionHex(cert, "2.5.29.14"),
-            authorityKeyIdentifier = extractExtensionHex(cert, "2.5.29.35")
+            authorityKeyIdentifier = extractExtensionHex(cert, "2.5.29.35"),
+            knownSignerHint = knownHint
         )
+    }
+
+    private fun detectKnownSigner(subjectDn: String, sha256: String, sha1: String): String? {
+        KNOWN_CERT_SHA256[sha256]?.let { return it }
+        KNOWN_CERT_SHA256[sha1]?.let { return it }
+        val lower = subjectDn.lowercase(Locale.US)
+        return when {
+            lower.contains("cn=android debug") && lower.contains("o=android") -> "Android Debug Keystore"
+            lower.contains("cn=samsung cert") && lower.contains("o=samsung") -> "Samsung Platform / OEM Cert"
+            lower.contains("android@android.com") -> "AOSP Generic Key"
+            else -> null
+        }
     }
 
     private fun extractKeyUsage(cert: X509Certificate): List<String> {

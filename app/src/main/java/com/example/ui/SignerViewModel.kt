@@ -10,6 +10,7 @@ import com.example.data.FileBrowserRepository
 import com.example.data.LanguagePreferences
 import com.example.data.RootShellService
 import com.example.model.ApkSourceType
+import com.example.model.ApkVerificationReport
 import com.example.model.AppLanguage
 import com.example.model.FileEntry
 import com.example.model.PermissionState
@@ -37,6 +38,13 @@ data class FileBrowserState(
     val useRootMode: Boolean = false,
     val checkedPaths: Set<String> = emptySet(),
     val cachedEntriesByPath: Map<String, FileEntry> = emptyMap()
+)
+
+data class PendingExternalCommandResult(
+    val reports: List<ApkVerificationReport>?,
+    val errorMessage: String?,
+    val silentReturn: Boolean,
+    val language: AppLanguage
 )
 
 class SignerViewModel(application: Application) : AndroidViewModel(application) {
@@ -67,10 +75,17 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     private val _verificationState = MutableStateFlow<VerificationUiState>(VerificationUiState.Idle)
     val verificationState: StateFlow<VerificationUiState> = _verificationState.asStateFlow()
 
+    private val _pendingExternalResult = MutableStateFlow<PendingExternalCommandResult?>(null)
+    val pendingExternalResult: StateFlow<PendingExternalCommandResult?> = _pendingExternalResult.asStateFlow()
+
     fun setLanguage(lang: AppLanguage) {
         viewModelScope.launch {
             languagePrefs.setLanguage(lang)
         }
+    }
+
+    fun consumePendingExternalResult() {
+        _pendingExternalResult.value = null
     }
 
     fun refreshPermissions() {
@@ -246,6 +261,66 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun handleExternalCommand(
+        paths: List<String>,
+        uris: List<Uri>,
+        autoVerify: Boolean,
+        returnResult: Boolean,
+        silentReturn: Boolean,
+        overrideLang: AppLanguage?
+    ) {
+        viewModelScope.launch {
+            val activeLang = overrideLang ?: language.value
+            if (overrideLang != null) {
+                languagePrefs.setLanguage(overrideLang)
+            }
+
+            val resolvedItems = mutableListOf<SelectedApkItem>()
+            paths.forEach { rawPath ->
+                val f = File(rawPath)
+                val sourceType = if (f.exists() && f.canRead()) {
+                    ApkSourceType.LOCAL_FILE
+                } else {
+                    ApkSourceType.ROOT_FILE
+                }
+                resolvedItems += SelectedApkItem(
+                    id = rawPath,
+                    displayName = f.name.ifBlank { "target.apk" },
+                    originalPath = rawPath,
+                    sourceType = sourceType,
+                    sizeBytes = if (f.exists()) f.length() else 0L,
+                    lastModifiedMs = if (f.exists()) f.lastModified() else 0L
+                )
+            }
+            uris.forEach { uri ->
+                fileRepo.resolveUriToSelectedItem(uri)?.let { resolvedItems += it }
+            }
+
+            val deduped = resolvedItems.distinctBy { it.id }
+            if (deduped.isEmpty()) {
+                if (returnResult) {
+                    _pendingExternalResult.value = PendingExternalCommandResult(
+                        reports = null,
+                        errorMessage = "No APK path or URI provided",
+                        silentReturn = silentReturn,
+                        language = activeLang
+                    )
+                }
+                return@launch
+            }
+
+            _selectedApks.value = deduped
+            if (autoVerify) {
+                runVerification(
+                    targets = deduped,
+                    emitExternalResult = returnResult,
+                    silentReturn = silentReturn,
+                    activeLang = activeLang
+                )
+            }
+        }
+    }
+
     fun removeSelectedApk(id: String) {
         _selectedApks.update { list -> list.filterNot { it.id == id } }
     }
@@ -297,41 +372,69 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     fun verifySelectedApks() {
         val targets = _selectedApks.value
         if (targets.isEmpty()) return
-
         viewModelScope.launch {
-            val reports = mutableListOf<com.example.model.ApkVerificationReport>()
-            val stagingDir = File(getApplication<Application>().cacheDir, "apk_staging")
-            try {
-                withContext(Dispatchers.IO) {
-                    targets.forEachIndexed { index, item ->
-                        _verificationState.value = VerificationUiState.Analyzing(
-                            currentIndex = index + 1,
-                            totalCount = targets.size,
-                            currentFileName = item.displayName
-                        )
-                        val sessionDir = File(stagingDir, "item_$index")
-                        val (readableFile, idsigFile) = fileRepo.prepareReadableApk(item, sessionDir)
-                        val report = analyzer.analyze(
-                            readableApkFile = readableFile,
-                            displayPath = item.originalPath,
-                            fallbackName = item.displayName,
-                            v4IdsigFile = idsigFile
-                        )
-                        reports += report
-                    }
+            runVerification(
+                targets = targets,
+                emitExternalResult = false,
+                silentReturn = false,
+                activeLang = language.value
+            )
+        }
+    }
+
+    private suspend fun runVerification(
+        targets: List<SelectedApkItem>,
+        emitExternalResult: Boolean,
+        silentReturn: Boolean,
+        activeLang: AppLanguage
+    ) {
+        val reports = mutableListOf<ApkVerificationReport>()
+        val stagingDir = File(getApplication<Application>().cacheDir, "apk_staging")
+        try {
+            withContext(Dispatchers.IO) {
+                targets.forEachIndexed { index, item ->
+                    _verificationState.value = VerificationUiState.Analyzing(
+                        currentIndex = index + 1,
+                        totalCount = targets.size,
+                        currentFileName = item.displayName
+                    )
+                    val sessionDir = File(stagingDir, "item_$index")
+                    val (readableFile, idsigFile) = fileRepo.prepareReadableApk(item, sessionDir)
+                    val report = analyzer.analyze(
+                        readableApkFile = readableFile,
+                        displayPath = item.originalPath,
+                        fallbackName = item.displayName,
+                        v4IdsigFile = idsigFile
+                    )
+                    reports += report
                 }
-                _verificationState.value = VerificationUiState.Success(
+            }
+            _verificationState.value = VerificationUiState.Success(
+                reports = reports,
+                selectedReportIndex = 0
+            )
+            if (emitExternalResult) {
+                _pendingExternalResult.value = PendingExternalCommandResult(
                     reports = reports,
-                    selectedReportIndex = 0
+                    errorMessage = null,
+                    silentReturn = silentReturn,
+                    language = activeLang
                 )
-            } catch (e: Exception) {
-                _verificationState.value = VerificationUiState.Error(
-                    e.message ?: "Unexpected verification failure"
+            }
+        } catch (e: Exception) {
+            val msg = e.message ?: "Unexpected verification failure"
+            _verificationState.value = VerificationUiState.Error(msg)
+            if (emitExternalResult) {
+                _pendingExternalResult.value = PendingExternalCommandResult(
+                    reports = null,
+                    errorMessage = msg,
+                    silentReturn = silentReturn,
+                    language = activeLang
                 )
-            } finally {
-                withContext(Dispatchers.IO) {
-                    fileRepo.clearStagingCache()
-                }
+            }
+        } finally {
+            withContext(Dispatchers.IO) {
+                fileRepo.clearStagingCache()
             }
         }
     }

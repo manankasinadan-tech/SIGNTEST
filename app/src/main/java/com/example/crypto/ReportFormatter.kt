@@ -35,6 +35,13 @@ object ReportFormatter {
         if (!report.packageName.isNullOrBlank()) {
             sb.appendLine("${s.labelPackage}: ${report.packageName}")
         }
+        if (report.minSdk != null || report.targetSdk != null) {
+            sb.appendLine("${s.labelSdk}: min ${report.minSdk ?: "-"} / target ${report.targetSdk ?: "-"}")
+        }
+        report.isDebuggable?.let {
+            sb.appendLine("${s.labelDebuggable}: $it")
+        }
+        sb.appendLine("${s.labelZipInfo}: ${report.zipEntryCount} entries | 4-byte aligned: ${report.isZipAligned4}")
         sb.appendLine()
 
         val schemeString = if (report.detectedSchemes.isEmpty()) {
@@ -48,11 +55,29 @@ object ReportFormatter {
             report.warnings.isNotEmpty() -> s.statusWithWarnings
             else -> s.statusVerified
         }
-        sb.appendLine("Statut : $statusText")
+        val statusLabel = if (lang == AppLanguage.FR) "Statut" else "Status"
+        sb.appendLine("$statusLabel : $statusText")
         sb.appendLine("${s.labelApkSha256} : ${report.apkSha256}")
+        sb.appendLine("${s.labelApkSha1} : ${report.apkSha1}")
         sb.appendLine("${s.labelApkMd5} : ${report.apkMd5}")
         sb.appendLine("${s.labelApkCrc32} : ${report.apkCrc32Hex}")
         sb.appendLine()
+
+        if (report.schemeDetails.isNotEmpty()) {
+            sb.appendLine("=== ${s.sectionSchemeMatrix} ===")
+            report.schemeDetails.forEach { d ->
+                val badge = if (d.isVerified) "VALID" else "FAILED"
+                val extra = buildList {
+                    add("signers=${d.signerCount}")
+                    d.sdkRange?.let { add(it) }
+                    if (d.signatureAlgorithms.isNotEmpty()) add("sig=${d.signatureAlgorithms.joinToString("/")}")
+                    if (d.digestAlgorithms.isNotEmpty()) add("digest=${d.digestAlgorithms.joinToString("/")}")
+                    d.notes?.let { add(it) }
+                }.joinToString(", ")
+                sb.appendLine("- ${d.scheme.label}: $badge ($extra)")
+            }
+            sb.appendLine()
+        }
 
         report.certificates.forEach { cert ->
             appendCertificateBlock(sb, cert, lang)
@@ -129,6 +154,7 @@ object ReportFormatter {
             " [${cert.schemeTags.joinToString(", ")}]"
         } else ""
         sb.appendLine("${s.reportCertificateTitle(cert.index)}$schemesSuffix")
+        cert.knownSignerHint?.let { sb.appendLine("${s.labelKnownSigner} : $it") }
         sb.appendLine("${s.reportCertType} : ${cert.type}")
         sb.appendLine("${s.reportCertVersion} : ${cert.version}")
         sb.appendLine("${s.reportSerial}: ${cert.serialNumberDecimal} (${cert.serialNumberHex})")
@@ -138,7 +164,7 @@ object ReportFormatter {
         val fromDate = formatDate(cert.notBeforeMs, lang)
         val toDate = formatDate(cert.notAfterMs, lang)
         val validitySuffix = when (cert.validityStatus) {
-            ValidityStatus.VALID -> ""
+            ValidityStatus.VALID -> " (${cert.daysRemaining}d)"
             ValidityStatus.EXPIRED -> " [${s.reportValidityExpired}]"
             ValidityStatus.NOT_YET_VALID -> " [${s.reportValidityNotYet}]"
         }
@@ -149,10 +175,22 @@ object ReportFormatter {
         sb.appendLine("${s.reportCrc32} : ${cert.crc32Hex} (${cert.crc32Long})")
         sb.appendLine("${s.reportMd5} : ${cert.md5}")
         sb.appendLine("${s.reportSha1} : ${cert.sha1}")
+        sb.appendLine("${s.labelSha1Colon} : ${cert.sha1Colon}")
         sb.appendLine("${s.reportSha224} : ${cert.sha224}")
         sb.appendLine("${s.reportSha256} : ${cert.sha256}")
+        sb.appendLine("${s.labelSha256Colon} : ${cert.sha256Colon}")
         sb.appendLine("${s.reportSha384} : ${cert.sha384}")
         sb.appendLine("${s.reportSha512} : ${cert.sha512}")
+        sb.appendLine()
+        if (cert.keyUsage.isNotEmpty()) {
+            sb.appendLine("${s.labelKeyUsage} : ${cert.keyUsage.joinToString(", ")}")
+        }
+        if (cert.extendedKeyUsage.isNotEmpty()) {
+            sb.appendLine("${s.labelExtendedKeyUsage} : ${cert.extendedKeyUsage.joinToString(", ")}")
+        }
+        cert.basicConstraints?.let { sb.appendLine("${s.labelBasicConstraints} : $it") }
+        cert.subjectKeyIdentifier?.let { sb.appendLine("${s.labelSki} : $it") }
+        cert.authorityKeyIdentifier?.let { sb.appendLine("${s.labelAki} : $it") }
         sb.appendLine()
         sb.appendLine("${s.reportCertBase64} : ${cert.certBase64}")
         sb.appendLine()
@@ -173,6 +211,7 @@ object ReportFormatter {
     fun formatJson(reports: List<ApkVerificationReport>): String {
         val root = JSONObject()
         root.put("tool", "SignerLAB")
+        root.put("apiVersion", "1.0")
         root.put("count", reports.size)
         val arr = JSONArray()
         reports.forEach { r ->
@@ -190,21 +229,40 @@ object ReportFormatter {
             put("versionCode", r.versionCode ?: JSONObject.NULL)
             put("minSdk", r.minSdk ?: JSONObject.NULL)
             put("targetSdk", r.targetSdk ?: JSONObject.NULL)
+            put("isDebuggable", r.isDebuggable ?: JSONObject.NULL)
+            put("zipEntryCount", r.zipEntryCount)
+            put("isZipAligned4", r.isZipAligned4)
             put("filePath", r.filePath)
             put("fileSizeBytes", r.fileSizeBytes)
             put("isVerified", r.isVerified)
             put("apkHashes", JSONObject().apply {
                 put("sha256", r.apkSha256)
+                put("sha1", r.apkSha1)
                 put("md5", r.apkMd5)
                 put("crc32", r.apkCrc32Hex)
             })
             put("detectedSchemes", JSONArray(r.detectedSchemes.map { it.label }))
             put("verifiedSchemes", JSONArray(r.verifiedSchemes.map { it.label }))
+            put("schemeMatrix", JSONArray().apply {
+                r.schemeDetails.forEach { d ->
+                    put(JSONObject().apply {
+                        put("scheme", d.scheme.label)
+                        put("present", d.isPresent)
+                        put("verified", d.isVerified)
+                        put("signerCount", d.signerCount)
+                        put("signatureAlgorithms", JSONArray(d.signatureAlgorithms))
+                        put("digestAlgorithms", JSONArray(d.digestAlgorithms))
+                        put("sdkRange", d.sdkRange ?: JSONObject.NULL)
+                        put("notes", d.notes ?: JSONObject.NULL)
+                    })
+                }
+            })
             put("certificates", JSONArray().apply {
                 r.certificates.forEach { c ->
                     put(JSONObject().apply {
                         put("index", c.index)
                         put("schemeTags", JSONArray(c.schemeTags))
+                        put("knownSignerHint", c.knownSignerHint ?: JSONObject.NULL)
                         put("type", c.type)
                         put("version", c.version)
                         put("serialNumberDecimal", c.serialNumberDecimal)
@@ -214,6 +272,7 @@ object ReportFormatter {
                         put("isSelfSigned", c.isSelfSigned)
                         put("notBeforeMs", c.notBeforeMs)
                         put("notAfterMs", c.notAfterMs)
+                        put("daysRemaining", c.daysRemaining)
                         put("validityStatus", c.validityStatus.name)
                         put("signatureAlgorithm", c.sigAlgName)
                         put("signatureAlgorithmOid", c.sigAlgOid)
@@ -223,8 +282,10 @@ object ReportFormatter {
                         put("crc32Long", c.crc32Long)
                         put("md5", c.md5)
                         put("sha1", c.sha1)
+                        put("sha1Colon", c.sha1Colon)
                         put("sha224", c.sha224)
                         put("sha256", c.sha256)
+                        put("sha256Colon", c.sha256Colon)
                         put("sha384", c.sha384)
                         put("sha512", c.sha512)
                         put("certBase64", c.certBase64)
@@ -237,6 +298,8 @@ object ReportFormatter {
                         put("keyUsage", JSONArray(c.keyUsage))
                         put("extendedKeyUsage", JSONArray(c.extendedKeyUsage))
                         put("basicConstraints", c.basicConstraints ?: JSONObject.NULL)
+                        put("subjectKeyIdentifier", c.subjectKeyIdentifier ?: JSONObject.NULL)
+                        put("authorityKeyIdentifier", c.authorityKeyIdentifier ?: JSONObject.NULL)
                     })
                 }
             })

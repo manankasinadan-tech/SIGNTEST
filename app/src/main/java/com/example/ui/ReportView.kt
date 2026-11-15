@@ -62,7 +62,6 @@ import com.example.crypto.ReportFormatter
 import com.example.model.ApkVerificationReport
 import com.example.model.AppLanguage
 import com.example.model.CertificateDetails
-import com.example.model.SignatureSchemeType
 import com.example.model.ValidityStatus
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalSemanticColors
@@ -112,20 +111,19 @@ fun ReportResultSection(
             }
         }
 
-        // View mode & Export toolbar
-        Row(
+        // View mode toggle + non-wrapping Export action bar
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            SingleChoiceSegmentedButtonRow {
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 SegmentedButton(
                     selected = !rawMode,
                     onClick = { rawMode = false },
                     shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                     modifier = Modifier.testTag("mode_structured_button")
                 ) {
-                    Text(strings.viewStructured, style = MaterialTheme.typography.labelMedium)
+                    Text(strings.viewStructured, maxLines = 1, softWrap = false)
                 }
                 SegmentedButton(
                     selected = rawMode,
@@ -133,46 +131,52 @@ fun ReportResultSection(
                     shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                     modifier = Modifier.testTag("mode_raw_button")
                 ) {
-                    Text(strings.viewRawReport, style = MaterialTheme.typography.labelMedium)
+                    Text(strings.viewRawReport, maxLines = 1, softWrap = false)
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 val rawText = remember(report, language) {
                     ReportFormatter.formatPlainText(report, language)
                 }
                 OutlinedButton(
                     onClick = { onCopyText(rawText) },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier
+                        .weight(1f)
                         .minimumInteractiveComponentSize()
                         .testTag("copy_report_button")
                 ) {
                     Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(strings.copyReport, style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(6.dp))
+                    Text(strings.copyReport, maxLines = 1, softWrap = false)
                 }
                 OutlinedButton(
                     onClick = onExportTxt,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier
+                        .weight(1f)
                         .minimumInteractiveComponentSize()
                         .testTag("export_txt_button")
                 ) {
                     Icon(Icons.Filled.Description, null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(strings.exportTxt, style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(6.dp))
+                    Text(strings.exportTxt, maxLines = 1, softWrap = false)
                 }
                 OutlinedButton(
                     onClick = onExportJson,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier
+                        .weight(1f)
                         .minimumInteractiveComponentSize()
                         .testTag("export_json_button")
                 ) {
                     Icon(Icons.Filled.SaveAlt, null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(strings.exportJson, style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(6.dp))
+                    Text(strings.exportJson, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -203,15 +207,16 @@ fun ReportResultSection(
                 }
             }
         } else {
-            // Verdict & APK Metadata Card
             VerdictSummaryCard(report = report, strings = strings, onCopy = onCopyText)
 
-            // Errors & Warnings Card
+            if (report.schemeDetails.isNotEmpty()) {
+                SchemeMatrixCard(report = report, strings = strings)
+            }
+
             if (report.errors.isNotEmpty() || report.warnings.isNotEmpty()) {
                 DiagnosticsCard(report = report, strings = strings)
             }
 
-            // Certificates
             report.certificates.forEach { cert ->
                 CertificateCard(
                     cert = cert,
@@ -221,7 +226,6 @@ fun ReportResultSection(
                 )
             }
 
-            // Advanced Crypto Panels
             AdvancedSchemePanels(
                 report = report,
                 language = language,
@@ -276,10 +280,7 @@ private fun VerdictSummaryCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    shape = MaterialTheme.shapes.small,
-                    color = statusBg
-                ) {
+                Surface(shape = MaterialTheme.shapes.small, color = statusBg) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -367,9 +368,64 @@ private fun VerdictSummaryCard(
                     onCopy
                 )
             }
+            report.isDebuggable?.let { dbg ->
+                MonoKeyValueRow(strings.labelDebuggable, dbg.toString(), onCopy)
+            }
+            MonoKeyValueRow(
+                strings.labelZipInfo,
+                "${report.zipEntryCount} entries • 4-byte aligned: ${report.isZipAligned4}",
+                onCopy
+            )
             MonoKeyValueRow(strings.labelApkSha256, report.apkSha256, onCopy)
+            MonoKeyValueRow(strings.labelApkSha1, report.apkSha1, onCopy)
             MonoKeyValueRow(strings.labelApkMd5, report.apkMd5, onCopy)
             MonoKeyValueRow(strings.labelApkCrc32, report.apkCrc32Hex, onCopy)
+        }
+    }
+}
+
+@Composable
+private fun SchemeMatrixCard(report: ApkVerificationReport, strings: UiStrings) {
+    val semantic = LocalSemanticColors.current
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(strings.sectionSchemeMatrix, style = MaterialTheme.typography.titleSmall)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            report.schemeDetails.forEach { d ->
+                val color = if (d.isVerified) semantic.verified else MaterialTheme.colorScheme.error
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = d.scheme.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = color
+                    )
+                    val info = buildList {
+                        add("${d.signerCount} signer(s)")
+                        d.sdkRange?.let { add(it) }
+                        if (d.digestAlgorithms.isNotEmpty()) add(d.digestAlgorithms.joinToString("/"))
+                        if (d.signatureAlgorithms.isNotEmpty()) add(d.signatureAlgorithms.joinToString("/"))
+                        d.notes?.let { add(it) }
+                    }.joinToString(" • ")
+                    Text(
+                        text = info,
+                        fontFamily = JetBrainsMonoFontFamily,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 12.dp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
     }
 }
@@ -444,7 +500,7 @@ private fun CertificateCard(
                 }
 
                 val (valLabel, valColor) = when (cert.validityStatus) {
-                    ValidityStatus.VALID -> strings.reportValidityOk to semantic.verified
+                    ValidityStatus.VALID -> "${strings.reportValidityOk} (${cert.daysRemaining}d)" to semantic.verified
                     ValidityStatus.EXPIRED -> strings.reportValidityExpired to MaterialTheme.colorScheme.error
                     ValidityStatus.NOT_YET_VALID -> strings.reportValidityNotYet to semantic.warning
                 }
@@ -455,8 +511,11 @@ private fun CertificateCard(
                 )
             }
 
-            if (cert.schemeTags.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (cert.schemeTags.isNotEmpty() || cert.knownSignerHint != null) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     cert.schemeTags.forEach { tag ->
                         Surface(
                             shape = MaterialTheme.shapes.extraSmall,
@@ -466,6 +525,19 @@ private fun CertificateCard(
                                 text = tag,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    cert.knownSignerHint?.let { hint ->
+                        Surface(
+                            shape = MaterialTheme.shapes.extraSmall,
+                            color = MaterialTheme.colorScheme.tertiaryContainer
+                        ) {
+                            Text(
+                                text = hint,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
@@ -503,8 +575,10 @@ private fun CertificateCard(
             MonoKeyValueRow(strings.reportCrc32, "${cert.crc32Hex} (${cert.crc32Long})", onCopy)
             MonoKeyValueRow(strings.reportMd5, cert.md5, onCopy)
             MonoKeyValueRow(strings.reportSha1, cert.sha1, onCopy)
+            MonoKeyValueRow(strings.labelSha1Colon, cert.sha1Colon, onCopy)
             MonoKeyValueRow(strings.reportSha224, cert.sha224, onCopy)
             MonoKeyValueRow(strings.reportSha256, cert.sha256, onCopy)
+            MonoKeyValueRow(strings.labelSha256Colon, cert.sha256Colon, onCopy)
             MonoKeyValueRow(strings.reportSha384, cert.sha384, onCopy)
             MonoKeyValueRow(strings.reportSha512, cert.sha512, onCopy)
 
@@ -551,6 +625,12 @@ private fun CertificateCard(
                     }
                     cert.basicConstraints?.let {
                         MonoKeyValueRow(strings.labelBasicConstraints, it, onCopy)
+                    }
+                    cert.subjectKeyIdentifier?.let {
+                        MonoKeyValueRow(strings.labelSki, it, onCopy)
+                    }
+                    cert.authorityKeyIdentifier?.let {
+                        MonoKeyValueRow(strings.labelAki, it, onCopy)
                     }
                     MonoKeyValueRow(strings.reportCertBase64, cert.certBase64, onCopy)
                     MonoKeyValueRow(strings.reportSigBits, cert.signatureBitsHex, onCopy)
@@ -626,6 +706,7 @@ private fun AdvancedSchemePanels(
                     report.v1JarDetails?.let { v1 ->
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         Text(strings.sectionV1Jar, style = MaterialTheme.typography.labelLarge)
+                        MonoKeyValueRow("Verified", v1.isVerified.toString(), onCopy)
                         MonoKeyValueRow("Signers", v1.signerFiles.joinToString(", ").ifEmpty { "-" }, onCopy)
                         MonoKeyValueRow("SF Files", v1.sfFiles.joinToString(", ").ifEmpty { "-" }, onCopy)
                         MonoKeyValueRow(
@@ -647,6 +728,8 @@ private fun AdvancedSchemePanels(
                         report.signingBlockInfo.pairs.forEach { pair ->
                             MonoKeyValueRow(pair.idHex, "${pair.name} (${pair.sizeBytes} B)", onCopy)
                         }
+                    } else {
+                        MonoKeyValueRow("Block", "Not present", onCopy)
                     }
                     if (report.signingBlockInfo.contentDigestAlgorithms.isNotEmpty()) {
                         MonoKeyValueRow(

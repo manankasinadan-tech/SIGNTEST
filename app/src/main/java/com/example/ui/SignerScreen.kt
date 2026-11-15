@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -51,6 +52,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -95,9 +100,11 @@ fun SignerScreen(
     onSelectReportTab: (Int) -> Unit,
     onCopyText: (String) -> Unit,
     onExportTxt: () -> Unit,
-    onExportJson: () -> Unit
+    onExportJson: () -> Unit,
+    onDownloadApiPdf: () -> Unit
 ) {
     val strings = stringsFor(language)
+    var showHelpDialog by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -129,19 +136,32 @@ fun SignerScreen(
                             Text(
                                 text = "SignerLAB",
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
                             )
                             Text(
                                 text = strings.appSubtitle,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { showHelpDialog = true },
+                        modifier = Modifier.testTag("help_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.HelpOutline,
+                            contentDescription = strings.helpTooltip,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     SingleChoiceSegmentedButtonRow(
-                        modifier = Modifier.padding(end = 12.dp)
+                        modifier = Modifier.padding(end = 10.dp)
                     ) {
                         AppLanguage.entries.forEachIndexed { idx, lang ->
                             SegmentedButton(
@@ -153,7 +173,12 @@ fun SignerScreen(
                                 ),
                                 modifier = Modifier.testTag("lang_toggle_${lang.code}")
                             ) {
-                                Text(lang.label, style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    text = lang.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
                     }
@@ -268,6 +293,16 @@ fun SignerScreen(
             onConfirm = onConfirmBrowserSelection
         )
     }
+
+    if (showHelpDialog) {
+        HelpDocumentationDialog(
+            language = language,
+            strings = strings,
+            onDismiss = { showHelpDialog = false },
+            onDownloadPdf = onDownloadApiPdf,
+            onCopySnippet = onCopyText
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -285,7 +320,6 @@ private fun ControlsColumnContent(
     onClearSelectedApks: () -> Unit,
     onVerifyClick: () -> Unit
 ) {
-    // Quick Permissions Card (Storage + Root easily activatable)
     PermissionStripCard(
         permissionState = permissionState,
         strings = strings,
@@ -294,7 +328,6 @@ private fun ControlsColumnContent(
         onRefresh = onRefreshPermissions
     )
 
-    // APK Selection Field Card (opens popup file manager)
     Surface(
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
@@ -324,7 +357,6 @@ private fun ControlsColumnContent(
                 }
             }
 
-            // Clickable picker field opening the popup file manager
             Surface(
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -393,7 +425,6 @@ private fun ControlsColumnContent(
                 }
             }
 
-            // VERIFY Button
             val isAnalyzing = verificationState is VerificationUiState.Analyzing
             Button(
                 onClick = onVerifyClick,
@@ -457,7 +488,6 @@ private fun PermissionStripCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Storage Permission Pill
             val storageActive = permissionState.hasStorageAccess
             Surface(
                 shape = MaterialTheme.shapes.small,
@@ -495,7 +525,6 @@ private fun PermissionStripCard(
                 }
             }
 
-            // Root Permission Pill
             val rootGranted = permissionState.rootStatus == RootStatus.GRANTED
             val rootStatusText = when (permissionState.rootStatus) {
                 RootStatus.GRANTED -> strings.granted

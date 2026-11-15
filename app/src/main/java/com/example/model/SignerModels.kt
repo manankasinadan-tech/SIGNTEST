@@ -60,6 +60,17 @@ enum class ValidityStatus {
     NOT_YET_VALID
 }
 
+data class SchemeVerificationDetail(
+    val scheme: SignatureSchemeType,
+    val isPresent: Boolean,
+    val isVerified: Boolean,
+    val signerCount: Int,
+    val signatureAlgorithms: List<String>,
+    val digestAlgorithms: List<String>,
+    val sdkRange: String? = null,
+    val notes: String? = null
+)
+
 data class CertificateDetails(
     val index: Int,
     val schemeTags: List<String>,
@@ -73,6 +84,7 @@ data class CertificateDetails(
     val notBeforeMs: Long,
     val notAfterMs: Long,
     val validityStatus: ValidityStatus,
+    val daysRemaining: Long,
     val sigAlgName: String,
     val sigAlgOid: String,
     val hashCodeHex: String,
@@ -81,8 +93,10 @@ data class CertificateDetails(
     val crc32Long: Long,
     val md5: String,
     val sha1: String,
+    val sha1Colon: String,
     val sha224: String,
     val sha256: String,
+    val sha256Colon: String,
     val sha384: String,
     val sha512: String,
     val certBase64: String,
@@ -96,7 +110,8 @@ data class CertificateDetails(
     val extendedKeyUsage: List<String>,
     val basicConstraints: String?,
     val subjectKeyIdentifier: String?,
-    val authorityKeyIdentifier: String?
+    val authorityKeyIdentifier: String?,
+    val knownSignerHint: String?
 )
 
 data class V3LineageNodeDetails(
@@ -138,6 +153,7 @@ data class SigningBlockInfo(
     val blockOffset: Long,
     val blockSizeBytes: Long,
     val pairs: List<SigningBlockPairInfo>,
+    val v1Verified: Boolean,
     val v2Verified: Boolean,
     val v3Verified: Boolean,
     val v31Verified: Boolean,
@@ -158,14 +174,19 @@ data class ApkVerificationReport(
     val versionCode: Long?,
     val minSdk: Int?,
     val targetSdk: Int?,
+    val isDebuggable: Boolean?,
+    val zipEntryCount: Int,
+    val isZipAligned4: Boolean,
     val filePath: String,
     val fileSizeBytes: Long,
     val apkSha256: String,
+    val apkSha1: String,
     val apkMd5: String,
     val apkCrc32Hex: String,
     val isVerified: Boolean,
     val detectedSchemes: List<SignatureSchemeType>,
     val verifiedSchemes: List<SignatureSchemeType>,
+    val schemeDetails: List<SchemeVerificationDetail>,
     val certificates: List<CertificateDetails>,
     val v3Lineage: List<V3LineageNodeDetails>,
     val sourceStamp: SourceStampDetails?,
