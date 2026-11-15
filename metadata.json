@@ -1,0 +1,6 @@
+{
+  "name": "SignerLAB",
+  "description": "Analyseur et vérificateur cryptographique avancé de signatures APK (V1, V2, V3, V3.1, V4, SourceStamp) avec explorateur intégré et support Root.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

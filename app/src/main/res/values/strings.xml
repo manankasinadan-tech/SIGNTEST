@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">SignerLAB</string>
+    <string name="cd_app_logo">SignerLAB</string>
+    <string name="cd_file_picker">Ouvrir le gestionnaire de fichiers</string>
+    <string name="cd_clear_selection">Vider la sélection</string>
+    <string name="cd_back">Retour</string>
+</resources>
