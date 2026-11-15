@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.SdStorage
 import androidx.compose.material.icons.filled.Search
@@ -44,6 +45,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.model.FileBrowserMode
 import com.example.model.FileEntry
 import com.example.model.PermissionState
 import com.example.model.RootStatus
@@ -78,6 +81,7 @@ fun FileManagerPopupDialog(
     onConfirm: () -> Unit
 ) {
     BackHandler(onBack = onDismiss)
+    val isDirMode = state.mode == FileBrowserMode.DIRECTORY_PICKER
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -108,7 +112,7 @@ fun FileManagerPopupDialog(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = strings.pickerTitle,
+                        text = if (isDirMode) strings.partitionPickerTitle else strings.pickerTitle,
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
@@ -168,6 +172,40 @@ fun FileManagerPopupDialog(
                         )
                     }
                     if (permissionState.rootStatus != RootStatus.UNAVAILABLE) {
+                        if (isDirMode) {
+                            item {
+                                FilterChip(
+                                    selected = state.currentPath.startsWith("/data/local"),
+                                    onClick = { shortcuts["data_local"]?.let { onNavigate(it, true) } },
+                                    label = { Text(strings.shortcutDataLocal) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Terminal, null, modifier = Modifier.size(16.dp))
+                                    },
+                                    modifier = Modifier.testTag("shortcut_data_local")
+                                )
+                            }
+                            item {
+                                FilterChip(
+                                    selected = state.currentPath.startsWith("/data/data"),
+                                    onClick = { shortcuts["data_data"]?.let { onNavigate(it, true) } },
+                                    label = { Text(strings.shortcutDataData) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Lock, null, modifier = Modifier.size(16.dp))
+                                    },
+                                    modifier = Modifier.testTag("shortcut_data_data")
+                                )
+                            }
+                            item {
+                                FilterChip(
+                                    selected = state.currentPath == "/",
+                                    onClick = { onNavigate("/", true) },
+                                    label = { Text(strings.shortcutRootSlash) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.AdminPanelSettings, null, modifier = Modifier.size(16.dp))
+                                    }
+                                )
+                            }
+                        }
                         item {
                             FilterChip(
                                 selected = state.currentPath.startsWith("/system"),
@@ -178,30 +216,34 @@ fun FileManagerPopupDialog(
                                 }
                             )
                         }
-                        item {
-                            FilterChip(
-                                selected = state.currentPath.startsWith("/data/app"),
-                                onClick = { shortcuts["data_app"]?.let { onNavigate(it, true) } },
-                                label = { Text(strings.shortcutDataApp) },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Lock, null, modifier = Modifier.size(16.dp))
-                                }
-                            )
+                        if (!isDirMode) {
+                            item {
+                                FilterChip(
+                                    selected = state.currentPath.startsWith("/data/app"),
+                                    onClick = { shortcuts["data_app"]?.let { onNavigate(it, true) } },
+                                    label = { Text(strings.shortcutDataApp) },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Lock, null, modifier = Modifier.size(16.dp))
+                                    }
+                                )
+                            }
                         }
                     }
-                    item {
-                        OutlinedButton(
-                            onClick = onOpenSystemSaf,
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.InsertDriveFile,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(strings.safFallback, style = MaterialTheme.typography.labelMedium)
+                    if (!isDirMode) {
+                        item {
+                            OutlinedButton(
+                                onClick = onOpenSystemSaf,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.InsertDriveFile,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(strings.safFallback, style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
                 }
@@ -266,29 +308,34 @@ fun FileManagerPopupDialog(
 
                 val filteredEntries = state.entries.filter { entry ->
                     val q = state.searchQuery.trim().lowercase()
-                    q.isEmpty() || entry.name.lowercase().contains(q)
+                    val matchesSearch = q.isEmpty() || entry.name.lowercase().contains(q)
+                    matchesSearch && (!isDirMode || entry.isDirectory)
                 }
-                val visibleApkCount = filteredEntries.count { !it.isDirectory }
+                val visibleApkCount = filteredEntries.count { !it.isDirectory && !it.isSymlink }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(
-                        onClick = onSelectAllVisible,
-                        enabled = visibleApkCount > 0
+                if (!isDirMode) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(strings.selectAllApks)
+                        TextButton(
+                            onClick = onSelectAllVisible,
+                            enabled = visibleApkCount > 0
+                        ) {
+                            Text(strings.selectAllApks)
+                        }
+                        TextButton(
+                            onClick = onClearSelection,
+                            enabled = state.checkedPaths.isNotEmpty()
+                        ) {
+                            Text(strings.deselectAll)
+                        }
                     }
-                    TextButton(
-                        onClick = onClearSelection,
-                        enabled = state.checkedPaths.isNotEmpty()
-                    ) {
-                        Text(strings.deselectAll)
-                    }
+                } else {
+                    Spacer(Modifier.height(6.dp))
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -375,11 +422,15 @@ fun FileManagerPopupDialog(
                                     }
                                 } else {
                                     items(filteredEntries, key = { it.path }) { entry ->
-                                        val isChecked = state.checkedPaths.contains(entry.path)
+                                        val isChecked = if (isDirMode) {
+                                            state.selectedDirectoryPath == entry.path
+                                        } else {
+                                            state.checkedPaths.contains(entry.path)
+                                        }
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable {
+                                                .clickable(enabled = !entry.isSymlink) {
                                                     if (entry.isDirectory) {
                                                         onNavigate(entry.path, null)
                                                     } else {
@@ -390,12 +441,16 @@ fun FileManagerPopupDialog(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Icon(
-                                                imageVector = if (entry.isDirectory) Icons.Filled.Folder else Icons.Filled.Android,
+                                                imageVector = when {
+                                                    entry.isSymlink -> Icons.Filled.LinkOff
+                                                    entry.isDirectory -> Icons.Filled.Folder
+                                                    else -> Icons.Filled.Android
+                                                },
                                                 contentDescription = null,
-                                                tint = if (entry.isDirectory) {
-                                                    MaterialTheme.colorScheme.primary
-                                                } else {
-                                                    MaterialTheme.colorScheme.secondary
+                                                tint = when {
+                                                    entry.isSymlink -> MaterialTheme.colorScheme.outline
+                                                    entry.isDirectory -> MaterialTheme.colorScheme.primary
+                                                    else -> MaterialTheme.colorScheme.secondary
                                                 },
                                                 modifier = Modifier.size(24.dp)
                                             )
@@ -404,10 +459,21 @@ fun FileManagerPopupDialog(
                                                 Text(
                                                     text = entry.name,
                                                     style = MaterialTheme.typography.bodyMedium,
+                                                    color = if (entry.isSymlink) {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurface
+                                                    },
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
-                                                if (!entry.isDirectory) {
+                                                if (entry.isSymlink) {
+                                                    Text(
+                                                        text = strings.symlinkBadge,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.error
+                                                    )
+                                                } else if (!entry.isDirectory) {
                                                     Text(
                                                         text = formatByteSize(entry.sizeBytes),
                                                         style = MaterialTheme.typography.labelSmall,
@@ -415,11 +481,18 @@ fun FileManagerPopupDialog(
                                                     )
                                                 }
                                             }
-                                            if (!entry.isDirectory) {
-                                                Checkbox(
-                                                    checked = isChecked,
-                                                    onCheckedChange = { onToggleEntry(entry) }
-                                                )
+                                            if (!entry.isSymlink) {
+                                                if (isDirMode && entry.isDirectory) {
+                                                    RadioButton(
+                                                        selected = isChecked,
+                                                        onClick = { onToggleEntry(entry) }
+                                                    )
+                                                } else if (!entry.isDirectory) {
+                                                    Checkbox(
+                                                        checked = isChecked,
+                                                        onCheckedChange = { onToggleEntry(entry) }
+                                                    )
+                                                }
                                             }
                                         }
                                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -433,6 +506,8 @@ fun FileManagerPopupDialog(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                 // Footer actions
+                val activeDirTarget = state.selectedDirectoryPath ?: state.currentPath
+                val activeDirName = activeDirTarget.trimEnd('/').substringAfterLast('/').ifBlank { "/" }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -448,7 +523,15 @@ fun FileManagerPopupDialog(
                         onClick = onConfirm,
                         modifier = Modifier.testTag("confirm_apk_selection_button")
                     ) {
-                        Text(strings.confirmSelection(state.checkedPaths.size))
+                        Text(
+                            text = if (isDirMode) {
+                                strings.confirmDirectoryButton(activeDirName)
+                            } else {
+                                strings.confirmSelection(state.checkedPaths.size)
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }

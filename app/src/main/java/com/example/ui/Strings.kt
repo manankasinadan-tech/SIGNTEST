@@ -164,7 +164,57 @@ data class UiStrings(
     val validityDaysLabel: String,
     val serialHexLabel: String,
     val saveClonedKeyOnly: String,
-    val generateAndResignButton: String
+    val generateAndResignButton: String,
+    // Partition / GSI Audit & Re-sign
+    val tabPartition: String,
+    val partitionDirFieldLabel: String,
+    val partitionDirPlaceholder: String,
+    val partitionPickerTitle: String,
+    val confirmDirectoryButton: (String) -> String,
+    val shortcutDataLocal: String,
+    val shortcutDataData: String,
+    val shortcutRootSlash: String,
+    val symlinkBadge: String,
+    val symlinkIgnoredToast: String,
+    val partitionVerifyButton: String,
+    val partitionResignButton: String,
+    val partitionEmptyTitle: String,
+    val partitionEmptyBody: String,
+    val partitionScanPhase: (String, Int, Int, String) -> String,
+    val partitionCoherentBadge: String,
+    val partitionWarningBadge: String,
+    val metricApksVerified: String,
+    val metricSigGroups: String,
+    val metricXmlMapped: String,
+    val metricSymlinksIgnored: String,
+    val sectionCoherenceSummary: String,
+    val sectionSignatureGroups: String,
+    val sectionXmlMappings: String,
+    val groupApkCount: (Int) -> String,
+    val groupSeinfoLabel: String,
+    val groupXmlLinkedLabel: String,
+    val inspectApkTooltip: String,
+    val xmlRefsCount: (Int) -> String,
+    val xmlUnmatchedLabel: String,
+    val verifyFirstPopupTitle: String,
+    val verifyFirstPopupBody: String,
+    val verifyFirstActionButton: String,
+    val gsiStrategyTitle: String,
+    val gsiStrategySubtitle: String,
+    val strategyAutoCloneTitle: String,
+    val strategyAutoCloneDesc: String,
+    val strategyAospTitle: String,
+    val strategyAospDesc: String,
+    val strategyCustomTitle: String,
+    val strategyCustomDesc: String,
+    val directReplaceWarning: String,
+    val saveClonedToVaultToggle: String,
+    val perGroupMappingTitle: String,
+    val gsiStartResignButton: String,
+    val gsiResignProgress: (String, Int, Int, String) -> String,
+    val gsiResignSuccessTitle: String,
+    val gsiResignStatsLine: (Int, Int, Int, Int) -> String,
+    val gsiPostAuditTitle: String
 )
 
 fun stringsFor(lang: AppLanguage): UiStrings = when (lang) {
@@ -329,7 +379,75 @@ fun stringsFor(lang: AppLanguage): UiStrings = when (lang) {
         validityDaysLabel = "Durée de validité (jours)",
         serialHexLabel = "Nouveau n° de série (hex)",
         saveClonedKeyOnly = "Sauvegarder clé (.p12)",
-        generateAndResignButton = "Générer & Resigner l'APK"
+        generateAndResignButton = "Générer & Resigner l'APK",
+        tabPartition = "Partition / GSI",
+        partitionDirFieldLabel = "Dossier GSI ou partition unpackée cible",
+        partitionDirPlaceholder = "Appuyez pour choisir un dossier (Root : /data/local, /data/data...)",
+        partitionPickerTitle = "Sélectionner un dossier Partition / GSI",
+        confirmDirectoryButton = { name -> "Choisir « $name »" },
+        shortcutDataLocal = "/data/local",
+        shortcutDataData = "/data/data",
+        shortcutRootSlash = "/ (Racine)",
+        symlinkBadge = "SYMLINK IGNORÉ",
+        symlinkIgnoredToast = "Lien symbolique ignoré pour protéger votre appareil",
+        partitionVerifyButton = "Vérifier",
+        partitionResignButton = "Resigner",
+        partitionEmptyTitle = "Audit Chaîne de Confiance GSI",
+        partitionEmptyBody = "Sélectionnez un dossier de partition ou GSI unpacké (ex: /data/local/gsi). SignerLAB ignore tous les liens symboliques, regroupe les APK par clé de signature et cartographie chaque fichier XML de permission.",
+        partitionScanPhase = { phase, cur, total, item ->
+            val label = when (phase) {
+                "SCAN" -> "Parcours sans symlink"
+                "APKS" -> "Vérification APK $cur/$total"
+                "XML" -> "Analyse XML $cur/$total"
+                else -> phase
+            }
+            "$label : $item"
+        },
+        partitionCoherentBadge = "CHAÎNE DE CONFIANCE COHÉRENTE",
+        partitionWarningBadge = "ANOMALIES DÉTECTÉES",
+        metricApksVerified = "APK valides",
+        metricSigGroups = "Groupes clés",
+        metricXmlMapped = "XML liés",
+        metricSymlinksIgnored = "Symlinks ignorés",
+        sectionCoherenceSummary = "Synthèse & Logique de confiance",
+        sectionSignatureGroups = "Groupes de signatures identiques",
+        sectionXmlMappings = "Cartographie des fichiers XML de permission",
+        groupApkCount = { n -> if (n == 1) "1 APK" else "$n APK" },
+        groupSeinfoLabel = "seinfo détectés",
+        groupXmlLinkedLabel = "XML associés",
+        inspectApkTooltip = "Inspecter cet APK",
+        xmlRefsCount = { n -> "$n empreinte(s)" },
+        xmlUnmatchedLabel = "Hors groupe local",
+        verifyFirstPopupTitle = "Vérification requise",
+        verifyFirstPopupBody = "Aucune vérification cryptographique n'a encore été effectuée sur ce dossier. Lancez d'abord « Vérifier » pour cartographier les groupes de clés, les schémas et les XML à préserver.",
+        verifyFirstActionButton = "Lancer la vérification",
+        gsiStrategyTitle = "Resignature cohérente GSI",
+        gsiStrategySubtitle = "Chaque groupe de signature est resigné en préservant ses schémas (V1/V2/V3/V4), puis tous les XML liés sont mis à jour automatiquement.",
+        strategyAutoCloneTitle = "Clonage structurel auto par groupe (Recommandé)",
+        strategyAutoCloneDesc = "Recrée une clé distincte par groupe via Key updater GSI (même structure X.509/extensions, nouvelle identité).",
+        strategyAospTitle = "Clés par défaut AOSP",
+        strategyAospDesc = "Assigne les profils AOSP (Platform, Shared, Media, TestKey) selon le rôle de chaque groupe.",
+        strategyCustomTitle = "Clés personnalisées (Coffre)",
+        strategyCustomDesc = "Associe une clé de votre coffre SignerLAB à chaque groupe détecté.",
+        directReplaceWarning = "Remplacement direct en place (sans fichier .bak). Tous les liens symboliques restent strictement ignorés.",
+        saveClonedToVaultToggle = "Sauvegarder les nouvelles clés dans le coffre",
+        perGroupMappingTitle = "Attribution des clés par groupe",
+        gsiStartResignButton = "Lancer la resignature GSI",
+        gsiResignProgress = { phase, cur, total, item ->
+            val label = when (phase) {
+                "KEYS" -> "Préparation clé $cur/$total"
+                "RESIGN_APK" -> "Resignature APK $cur/$total"
+                "UPDATE_XML" -> "Mise à jour XML $cur/$total"
+                "VERIFY_POST" -> "Audit post-resignature"
+                else -> phase
+            }
+            "$label : $item"
+        },
+        gsiResignSuccessTitle = "GSI resigné avec cohérence vérifiée",
+        gsiResignStatsLine = { apks, xmls, refs, syms ->
+            "$apks APK remplacés · $xmls XML mis à jour ($refs empreintes) · $syms symlinks ignorés"
+        },
+        gsiPostAuditTitle = "Audit post-resignature"
     )
 
     AppLanguage.EN -> UiStrings(
@@ -493,6 +611,74 @@ fun stringsFor(lang: AppLanguage): UiStrings = when (lang) {
         validityDaysLabel = "Validity span (days)",
         serialHexLabel = "New serial number (hex)",
         saveClonedKeyOnly = "Save Key (.p12)",
-        generateAndResignButton = "Generate & Re-sign APK"
+        generateAndResignButton = "Generate & Re-sign APK",
+        tabPartition = "Partition / GSI",
+        partitionDirFieldLabel = "Target unpacked partition / GSI folder",
+        partitionDirPlaceholder = "Tap to choose folder (Root: /data/local, /data/data...)",
+        partitionPickerTitle = "Select Partition / GSI Folder",
+        confirmDirectoryButton = { name -> "Select \"$name\"" },
+        shortcutDataLocal = "/data/local",
+        shortcutDataData = "/data/data",
+        shortcutRootSlash = "/ (Root)",
+        symlinkBadge = "SYMLINK SKIPPED",
+        symlinkIgnoredToast = "Symbolic link ignored to protect device files",
+        partitionVerifyButton = "Verify",
+        partitionResignButton = "Re-sign",
+        partitionEmptyTitle = "GSI Chain-of-Trust Audit",
+        partitionEmptyBody = "Select an unpacked partition or GSI directory (e.g. /data/local/gsi). SignerLAB strictly ignores all symbolic links, groups APKs by signing certificate, and maps every permission XML.",
+        partitionScanPhase = { phase, cur, total, item ->
+            val label = when (phase) {
+                "SCAN" -> "Symlink-safe scan"
+                "APKS" -> "Verifying APK $cur/$total"
+                "XML" -> "Parsing XML $cur/$total"
+                else -> phase
+            }
+            "$label: $item"
+        },
+        partitionCoherentBadge = "CHAIN OF TRUST COHERENT",
+        partitionWarningBadge = "ANOMALIES DETECTED",
+        metricApksVerified = "Valid APKs",
+        metricSigGroups = "Key groups",
+        metricXmlMapped = "Linked XMLs",
+        metricSymlinksIgnored = "Symlinks skipped",
+        sectionCoherenceSummary = "Trust Topology & Summary",
+        sectionSignatureGroups = "Identical Signature Groups",
+        sectionXmlMappings = "Permission XML Signature Map",
+        groupApkCount = { n -> if (n == 1) "1 APK" else "$n APKs" },
+        groupSeinfoLabel = "Detected seinfo",
+        groupXmlLinkedLabel = "Matched XMLs",
+        inspectApkTooltip = "Inspect APK",
+        xmlRefsCount = { n -> "$n ref(s)" },
+        xmlUnmatchedLabel = "External ref",
+        verifyFirstPopupTitle = "Verification Required",
+        verifyFirstPopupBody = "No cryptographic audit has been completed for this folder yet. Run \"Verify\" first to map signature groups, schemes, and permission XML files.",
+        verifyFirstActionButton = "Run Verification",
+        gsiStrategyTitle = "Coherent GSI Re-signing",
+        gsiStrategySubtitle = "Each signature group is re-signed preserving per-APK schemes (V1/V2/V3/V4), then all linked permission XML files are updated in place.",
+        strategyAutoCloneTitle = "Auto Structural Clone per Group (Recommended)",
+        strategyAutoCloneDesc = "Generates one fresh key per group via Key updater GSI preserving X.509 structure and extensions.",
+        strategyAospTitle = "Default AOSP Keys",
+        strategyAospDesc = "Assigns AOSP keys (Platform, Shared, Media, TestKey) matching each group's inferred role.",
+        strategyCustomTitle = "Custom Keys (Vault)",
+        strategyCustomDesc = "Assign keys from your SignerLAB Vault to each detected signature group.",
+        directReplaceWarning = "Direct in-place replacement (zero .bak files). All symbolic links remain strictly untouched.",
+        saveClonedToVaultToggle = "Save newly cloned keys to Key Vault",
+        perGroupMappingTitle = "Per-Group Key Mapping",
+        gsiStartResignButton = "Start GSI Re-signing",
+        gsiResignProgress = { phase, cur, total, item ->
+            val label = when (phase) {
+                "KEYS" -> "Preparing key $cur/$total"
+                "RESIGN_APK" -> "Re-signing APK $cur/$total"
+                "UPDATE_XML" -> "Updating XML $cur/$total"
+                "VERIFY_POST" -> "Post-resign audit"
+                else -> phase
+            }
+            "$label: $item"
+        },
+        gsiResignSuccessTitle = "GSI Re-signed with Verified Coherence",
+        gsiResignStatsLine = { apks, xmls, refs, syms ->
+            "$apks APKs replaced · $xmls XMLs updated ($refs refs) · $syms symlinks skipped"
+        },
+        gsiPostAuditTitle = "Post-Resign Coherence Audit"
     )
 }

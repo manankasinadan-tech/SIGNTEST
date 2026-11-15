@@ -42,7 +42,8 @@ data class FileEntry(
     val sizeBytes: Long,
     val lastModifiedMs: Long,
     val isReadable: Boolean,
-    val viaRoot: Boolean
+    val viaRoot: Boolean,
+    val isSymlink: Boolean = false
 )
 
 enum class SignatureSchemeType(val label: String) {

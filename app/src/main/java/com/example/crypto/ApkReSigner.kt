@@ -146,6 +146,69 @@ class ApkReSigner(private val context: Context) {
         }
     }
 
+    fun signApkToFile(
+        readableInputApk: File,
+        targetOutputApk: File,
+        targetOutputIdsig: File?,
+        privateKey: PrivateKey,
+        certificates: List<X509Certificate>,
+        signerName: String,
+        options: SigningOptions
+    ) {
+        require(certificates.isNotEmpty()) { "At least one X.509 certificate is required" }
+        require(options.signV1 || options.signV2 || options.signV3 || options.signV4) {
+            "Enable at least one signature scheme (V1, V2, V3, or V4)"
+        }
+
+        val workDir = File(context.cacheDir, "gsi_resign_work_${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val cleanedApk = File(workDir, "cleaned_aligned.apk")
+            cleanAndAlignApk(
+                inputApk = readableInputApk,
+                outputApk = cleanedApk,
+                align4 = options.zipAlign4
+            )
+
+            val tempSigned = File(workDir, "signed_temp.apk")
+            val tempIdsig = File(workDir, "signed_temp.apk.idsig")
+            val detectedMinSdk = readMinSdkOrDefault(cleanedApk, defaultSdk = 21)
+            val signerConfig = ApkSigner.SignerConfig.Builder(
+                signerName.ifBlank { "SignerLAB" },
+                KeyConfig.Jca(privateKey),
+                certificates
+            ).build()
+
+            val effectiveV2 = options.signV2 || options.signV4
+            val builder = ApkSigner.Builder(listOf(signerConfig))
+                .setInputApk(cleanedApk)
+                .setOutputApk(tempSigned)
+                .setMinSdkVersion(detectedMinSdk)
+                .setV1SigningEnabled(options.signV1)
+                .setV2SigningEnabled(effectiveV2)
+                .setV3SigningEnabled(options.signV3)
+                .setV4SigningEnabled(options.signV4)
+                .setAlignFileSize(options.zipAlign4)
+                .setDebuggableApkPermitted(true)
+                .setOtherSignersSignaturesPreserved(false)
+                .setCreatedBy("SignerLAB")
+
+            if (options.signV4) {
+                builder.setV4SignatureOutputFile(tempIdsig)
+            }
+
+            builder.build().sign()
+
+            targetOutputApk.parentFile?.mkdirs()
+            copyFile(tempSigned, targetOutputApk)
+            if (options.signV4 && targetOutputIdsig != null && tempIdsig.exists()) {
+                targetOutputIdsig.parentFile?.mkdirs()
+                copyFile(tempIdsig, targetOutputIdsig)
+            }
+        } finally {
+            workDir.deleteRecursively()
+        }
+    }
+
     internal fun cleanAndAlignApk(inputApk: File, outputApk: File, align4: Boolean) {
         val buf = ByteArray(64 * 1024)
         ZipFile(inputApk).use { zip ->

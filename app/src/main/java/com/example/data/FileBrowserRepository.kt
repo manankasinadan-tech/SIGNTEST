@@ -44,19 +44,24 @@ class FileBrowserRepository(private val context: Context) {
             }
 
             val dir = File(path)
+            if (java.nio.file.Files.isSymbolicLink(dir.toPath())) {
+                return@withContext Result.failure(IllegalStateException("Symlink directory ignored: $path"))
+            }
             val children = dir.listFiles()
             if (children != null) {
                 val entries = children
                     .filter { it.isDirectory || it.name.endsWith(".apk", ignoreCase = true) }
                     .map { child ->
+                        val isSymlink = java.nio.file.Files.isSymbolicLink(child.toPath())
                         FileEntry(
                             name = child.name,
                             path = child.absolutePath,
                             isDirectory = child.isDirectory,
-                            sizeBytes = if (child.isDirectory) 0L else child.length(),
+                            sizeBytes = if (child.isDirectory || isSymlink) 0L else child.length(),
                             lastModifiedMs = child.lastModified(),
-                            isReadable = child.canRead(),
-                            viaRoot = false
+                            isReadable = !isSymlink && child.canRead(),
+                            viaRoot = false,
+                            isSymlink = isSymlink
                         )
                     }
                     .sortedWith(compareBy<FileEntry>({ !it.isDirectory }, { it.name.lowercase() }))

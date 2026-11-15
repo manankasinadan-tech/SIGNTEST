@@ -2,7 +2,8 @@ package com.example.model
 
 enum class MainTab {
     VERIFY,
-    RESIGN
+    RESIGN,
+    PARTITION
 }
 
 enum class AospKeyProfile(

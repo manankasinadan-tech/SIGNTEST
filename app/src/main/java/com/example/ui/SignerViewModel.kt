@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.crypto.AospKeyProvider
 import com.example.crypto.ApkReSigner
 import com.example.crypto.ApkSignatureAnalyzer
+import com.example.crypto.GsiChainOfTrustAnalyzer
+import com.example.crypto.GsiPartitionReSigner
 import com.example.crypto.KeyCloner
 import com.example.crypto.KeystoreManager
 import com.example.crypto.ReportFormatter
@@ -19,8 +21,12 @@ import com.example.model.ApkVerificationReport
 import com.example.model.AppLanguage
 import com.example.model.ClonedKeySpec
 import com.example.model.CustomKeyCreationSpec
+import com.example.model.FileBrowserMode
 import com.example.model.FileEntry
 import com.example.model.MainTab
+import com.example.model.PartitionAuditUiState
+import com.example.model.PartitionResignPlan
+import com.example.model.PartitionResignUiState
 import com.example.model.PermissionState
 import com.example.model.RootStatus
 import com.example.model.SelectedApkItem
@@ -42,6 +48,7 @@ import java.io.File
 
 data class FileBrowserState(
     val isOpen: Boolean = false,
+    val mode: FileBrowserMode = FileBrowserMode.APK_PICKER,
     val currentPath: String = "/storage/emulated/0",
     val entries: List<FileEntry> = emptyList(),
     val isLoading: Boolean = false,
@@ -49,6 +56,7 @@ data class FileBrowserState(
     val searchQuery: String = "",
     val useRootMode: Boolean = false,
     val checkedPaths: Set<String> = emptySet(),
+    val selectedDirectoryPath: String? = null,
     val cachedEntriesByPath: Map<String, FileEntry> = emptyMap()
 )
 
@@ -67,6 +75,8 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     private val aospKeyProvider = AospKeyProvider(application)
     private val keystoreManager = KeystoreManager(application)
     private val apkReSigner = ApkReSigner(application)
+    private val gsiAnalyzer = GsiChainOfTrustAnalyzer(application)
+    private val gsiReSigner = GsiPartitionReSigner(application)
 
     val language: StateFlow<AppLanguage> = languagePrefs.languageFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppLanguage.FR)
@@ -115,6 +125,22 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _keyUpdaterSpec = MutableStateFlow<ClonedKeySpec?>(null)
     val keyUpdaterSpec: StateFlow<ClonedKeySpec?> = _keyUpdaterSpec.asStateFlow()
+
+    // --- Partition / GSI StateFlows ---
+    private val _partitionSelectedDir = MutableStateFlow("")
+    val partitionSelectedDir: StateFlow<String> = _partitionSelectedDir.asStateFlow()
+
+    private val _partitionAuditState = MutableStateFlow<PartitionAuditUiState>(PartitionAuditUiState.Idle)
+    val partitionAuditState: StateFlow<PartitionAuditUiState> = _partitionAuditState.asStateFlow()
+
+    private val _partitionResignState = MutableStateFlow<PartitionResignUiState>(PartitionResignUiState.Idle)
+    val partitionResignState: StateFlow<PartitionResignUiState> = _partitionResignState.asStateFlow()
+
+    private val _showVerifyBeforeResignDialog = MutableStateFlow(false)
+    val showVerifyBeforeResignDialog: StateFlow<Boolean> = _showVerifyBeforeResignDialog.asStateFlow()
+
+    private val _showGsiResignStrategyDialog = MutableStateFlow(false)
+    val showGsiResignStrategyDialog: StateFlow<Boolean> = _showGsiResignStrategyDialog.asStateFlow()
 
     private val _pendingExternalResult = MutableStateFlow<PendingExternalCommandResult?>(null)
     val pendingExternalResult: StateFlow<PendingExternalCommandResult?> = _pendingExternalResult.asStateFlow()
@@ -166,27 +192,43 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     fun openFileBrowser(forTab: MainTab = _activeTab.value) {
         browserTargetTab = forTab
         refreshPermissions()
+        val browserMode = if (forTab == MainTab.PARTITION) {
+            FileBrowserMode.DIRECTORY_PICKER
+        } else {
+            FileBrowserMode.APK_PICKER
+        }
         val currentSelection = if (forTab == MainTab.RESIGN) {
             _resignSelectedApks.value
         } else {
             _selectedApks.value
         }
-        val preChecked = currentSelection
-            .filter { it.sourceType != ApkSourceType.CONTENT_URI }
-            .map { it.originalPath }
-            .toSet()
-        val startPath = _fileBrowserState.value.currentPath.ifBlank {
-            fileRepo.getDefaultInternalPath()
+        val preChecked = if (browserMode == FileBrowserMode.APK_PICKER) {
+            currentSelection
+                .filter { it.sourceType != ApkSourceType.CONTENT_URI }
+                .map { it.originalPath }
+                .toSet()
+        } else {
+            emptySet()
         }
+        val startPath = if (browserMode == FileBrowserMode.DIRECTORY_PICKER && _partitionSelectedDir.value.isNotBlank()) {
+            _partitionSelectedDir.value
+        } else {
+            _fileBrowserState.value.currentPath.ifBlank { fileRepo.getDefaultInternalPath() }
+        }
+        val autoRoot = _fileBrowserState.value.useRootMode ||
+            (isRootRequiredPath(startPath) && _permissionState.value.rootStatus == RootStatus.GRANTED)
         _fileBrowserState.update {
             it.copy(
                 isOpen = true,
+                mode = browserMode,
                 searchQuery = "",
+                useRootMode = autoRoot,
                 checkedPaths = preChecked,
+                selectedDirectoryPath = null,
                 errorMessage = null
             )
         }
-        loadDirectory(startPath, _fileBrowserState.value.useRootMode)
+        loadDirectory(startPath, autoRoot)
     }
 
     fun closeFileBrowser() {
@@ -233,6 +275,16 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun toggleFileSelection(entry: FileEntry) {
+        if (entry.isSymlink) return
+        val mode = _fileBrowserState.value.mode
+        if (mode == FileBrowserMode.DIRECTORY_PICKER) {
+            if (!entry.isDirectory) return
+            _fileBrowserState.update { state ->
+                val nextDir = if (state.selectedDirectoryPath == entry.path) null else entry.path
+                state.copy(selectedDirectoryPath = nextDir)
+            }
+            return
+        }
         if (entry.isDirectory) return
         _fileBrowserState.update { state ->
             val next = state.checkedPaths.toMutableSet()
@@ -267,6 +319,18 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun confirmBrowserSelection() {
         val state = _fileBrowserState.value
+        if (state.mode == FileBrowserMode.DIRECTORY_PICKER) {
+            val chosen = state.selectedDirectoryPath ?: state.currentPath
+            val prev = _partitionSelectedDir.value
+            _partitionSelectedDir.value = chosen
+            if (prev != chosen) {
+                _partitionAuditState.value = PartitionAuditUiState.Idle
+                _partitionResignState.value = PartitionResignUiState.Idle
+            }
+            _fileBrowserState.update { it.copy(isOpen = false) }
+            return
+        }
+
         val targetFlow = if (browserTargetTab == MainTab.RESIGN) _resignSelectedApks else _selectedApks
         val existingUriItems = targetFlow.value.filter { it.sourceType == ApkSourceType.CONTENT_URI }
         val existingByPath = targetFlow.value.associateBy { it.originalPath }
@@ -387,8 +451,15 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
         "internal" to fileRepo.getDefaultInternalPath(),
         "downloads" to fileRepo.getDownloadsPath(),
         "system" to "/system",
-        "data_app" to "/data/app"
+        "data_app" to "/data/app",
+        "data_local" to "/data/local",
+        "data_data" to "/data/data"
     )
+
+    private fun isRootRequiredPath(path: String): Boolean {
+        return path == "/" || path.startsWith("/data") || path.startsWith("/system") ||
+            path.startsWith("/vendor") || path.startsWith("/product") || path.startsWith("/apex")
+    }
 
     private fun loadDirectory(path: String, useRoot: Boolean) {
         _fileBrowserState.update {
@@ -779,6 +850,103 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     fun inspectSignedApkReport(result: SignedApkResult) {
         _verificationState.value = VerificationUiState.Success(
             reports = listOf(result.verificationReport),
+            selectedReportIndex = 0
+        )
+        _activeTab.value = MainTab.VERIFY
+    }
+
+    // --- Partition / GSI Audit & Re-sign Actions ---
+
+    fun clearPartitionDir() {
+        _partitionSelectedDir.value = ""
+        _partitionAuditState.value = PartitionAuditUiState.Idle
+        _partitionResignState.value = PartitionResignUiState.Idle
+    }
+
+    fun verifyPartition() {
+        val dir = _partitionSelectedDir.value.trim()
+        if (dir.isBlank()) return
+        val useRoot = (_permissionState.value.rootStatus == RootStatus.GRANTED) &&
+            (isRootRequiredPath(dir) || _fileBrowserState.value.useRootMode)
+
+        _partitionResignState.value = PartitionResignUiState.Idle
+        viewModelScope.launch {
+            _partitionAuditState.value = PartitionAuditUiState.Scanning("SCAN", 0, 1, dir)
+            val res = gsiAnalyzer.analyze(
+                rootPath = dir,
+                useRoot = useRoot,
+                onProgress = { phase, cur, total, item ->
+                    _partitionAuditState.value = PartitionAuditUiState.Scanning(phase, cur, total, item)
+                }
+            )
+            res.fold(
+                onSuccess = { report ->
+                    _partitionAuditState.value = PartitionAuditUiState.Verified(report)
+                },
+                onFailure = { err ->
+                    _partitionAuditState.value = PartitionAuditUiState.Error(
+                        err.message ?: "Partition verification failed"
+                    )
+                }
+            )
+        }
+    }
+
+    fun onPartitionResignClick() {
+        val selectedDir = _partitionSelectedDir.value.trim()
+        if (selectedDir.isBlank()) return
+        val currentAudit = (_partitionAuditState.value as? PartitionAuditUiState.Verified)?.report
+        if (currentAudit != null && currentAudit.rootPath == selectedDir && currentAudit.apkEntries.isNotEmpty()) {
+            _vaultKeys.value = keystoreManager.listKeys()
+            _showGsiResignStrategyDialog.value = true
+        } else {
+            _showVerifyBeforeResignDialog.value = true
+        }
+    }
+
+    fun dismissVerifyBeforeResignDialog() {
+        _showVerifyBeforeResignDialog.value = false
+    }
+
+    fun verifyFromGateDialog() {
+        _showVerifyBeforeResignDialog.value = false
+        verifyPartition()
+    }
+
+    fun dismissGsiStrategyDialog() {
+        _showGsiResignStrategyDialog.value = false
+    }
+
+    fun executeGsiResignPlan(plan: PartitionResignPlan) {
+        val currentAudit = (_partitionAuditState.value as? PartitionAuditUiState.Verified)?.report ?: return
+        _showGsiResignStrategyDialog.value = false
+        viewModelScope.launch {
+            _partitionResignState.value = PartitionResignUiState.Resigning("KEYS", 0, currentAudit.signatureGroups.size, "")
+            val res = gsiReSigner.resignPartition(
+                auditReport = currentAudit,
+                plan = plan,
+                onProgress = { phase, cur, total, item ->
+                    _partitionResignState.value = PartitionResignUiState.Resigning(phase, cur, total, item)
+                }
+            )
+            _vaultKeys.value = keystoreManager.listKeys()
+            res.fold(
+                onSuccess = { outcome ->
+                    _partitionResignState.value = PartitionResignUiState.Success(outcome)
+                    _partitionAuditState.value = PartitionAuditUiState.Verified(outcome.postAuditReport)
+                },
+                onFailure = { err ->
+                    _partitionResignState.value = PartitionResignUiState.Error(
+                        err.message ?: "GSI re-signing failed"
+                    )
+                }
+            )
+        }
+    }
+
+    fun inspectPartitionApkReport(report: ApkVerificationReport) {
+        _verificationState.value = VerificationUiState.Success(
+            reports = listOf(report),
             selectedReportIndex = 0
         )
         _activeTab.value = MainTab.VERIFY

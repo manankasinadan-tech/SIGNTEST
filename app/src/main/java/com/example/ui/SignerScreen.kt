@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -67,10 +68,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.model.AospKeyProfile
+import com.example.model.ApkVerificationReport
 import com.example.model.AppLanguage
 import com.example.model.ClonedKeySpec
 import com.example.model.CustomKeyCreationSpec
 import com.example.model.MainTab
+import com.example.model.PartitionAuditUiState
+import com.example.model.PartitionResignPlan
+import com.example.model.PartitionResignUiState
 import com.example.model.PermissionState
 import com.example.model.RootStatus
 import com.example.model.SelectedApkItem
@@ -97,6 +102,11 @@ fun SignerScreen(
     vaultKeys: List<StoredKeyEntry>,
     showCustomKeyDialog: Boolean,
     keyUpdaterSpec: ClonedKeySpec?,
+    partitionSelectedDir: String,
+    partitionAuditState: PartitionAuditUiState,
+    partitionResignState: PartitionResignUiState,
+    showVerifyBeforeResignDialog: Boolean,
+    showGsiResignStrategyDialog: Boolean,
     shortcuts: Map<String, String>,
     snackbarHostState: SnackbarHostState,
     onLanguageChange: (AppLanguage) -> Unit,
@@ -141,12 +151,20 @@ fun SignerScreen(
     onSaveClonedKeyOnly: (ClonedKeySpec) -> Unit,
     onGenerateClonedAndResign: (ClonedKeySpec) -> Unit,
     onInspectSignedReport: (SignedApkResult) -> Unit,
-    onSaveSignedApkAs: (SignedApkResult) -> Unit
+    onSaveSignedApkAs: (SignedApkResult) -> Unit,
+    onClearPartitionDir: () -> Unit,
+    onVerifyPartition: () -> Unit,
+    onResignPartitionClick: () -> Unit,
+    onDismissVerifyBeforeResign: () -> Unit,
+    onVerifyFromGateDialog: () -> Unit,
+    onDismissGsiStrategyDialog: () -> Unit,
+    onExecuteGsiResignPlan: (PartitionResignPlan) -> Unit,
+    onInspectPartitionApkReport: (ApkVerificationReport) -> Unit
 ) {
     val strings = stringsFor(language)
     var showHelpDialog by rememberSaveable { mutableStateOf(false) }
 
-    BackHandler(enabled = activeTab == MainTab.RESIGN) {
+    BackHandler(enabled = activeTab != MainTab.VERIFY) {
         onTabChange(MainTab.VERIFY)
     }
 
@@ -236,22 +254,33 @@ fun SignerScreen(
                 .padding(innerPadding)
         ) {
             PrimaryTabRow(
-                selectedTabIndex = if (activeTab == MainTab.VERIFY) 0 else 1,
+                selectedTabIndex = when (activeTab) {
+                    MainTab.VERIFY -> 0
+                    MainTab.RESIGN -> 1
+                    MainTab.PARTITION -> 2
+                },
                 containerColor = MaterialTheme.colorScheme.background
             ) {
                 Tab(
                     selected = activeTab == MainTab.VERIFY,
                     onClick = { onTabChange(MainTab.VERIFY) },
                     icon = { Icon(Icons.Filled.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    text = { Text(strings.tabVerify, maxLines = 1, softWrap = false) },
+                    text = { Text(strings.tabVerify, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
                     modifier = Modifier.testTag("main_tab_verify")
                 )
                 Tab(
                     selected = activeTab == MainTab.RESIGN,
                     onClick = { onTabChange(MainTab.RESIGN) },
                     icon = { Icon(Icons.Filled.Draw, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    text = { Text(strings.tabResign, maxLines = 1, softWrap = false) },
+                    text = { Text(strings.tabResign, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
                     modifier = Modifier.testTag("main_tab_resign")
+                )
+                Tab(
+                    selected = activeTab == MainTab.PARTITION,
+                    onClick = { onTabChange(MainTab.PARTITION) },
+                    icon = { Icon(Icons.Filled.AccountTree, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    text = { Text(strings.tabPartition, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) },
+                    modifier = Modifier.testTag("main_tab_partition")
                 )
             }
 
@@ -283,32 +312,47 @@ fun SignerScreen(
                                 onActivateRoot = onRequestRootPermission,
                                 onRefresh = onRefreshPermissions
                             )
-                            if (activeTab == MainTab.VERIFY) {
-                                VerifyControlsCard(
-                                    selectedApks = selectedApks,
-                                    verificationState = verificationState,
-                                    strings = strings,
-                                    onOpenFilePicker = { onOpenFilePicker(MainTab.VERIFY) },
-                                    onRemoveSelectedApk = onRemoveSelectedApk,
-                                    onClearSelectedApks = onClearSelectedApks,
-                                    onVerifyClick = onVerifyClick
-                                )
-                            } else {
-                                ResignControlsColumn(
-                                    selectedApks = resignSelectedApks,
-                                    selectedAospProfile = selectedAospProfile,
-                                    signingOptions = signingOptions,
-                                    signingState = signingState,
-                                    strings = strings,
-                                    onOpenFilePicker = { onOpenFilePicker(MainTab.RESIGN) },
-                                    onRemoveApk = onRemoveResignApk,
-                                    onClearApks = onClearResignApks,
-                                    onSelectAospProfile = onSelectAospProfile,
-                                    onUpdateOptions = onUpdateSigningOptions,
-                                    onSignWithAospClick = onSignWithAospClick,
-                                    onSignWithCustomClick = onOpenCustomKeyDialog,
-                                    onKeyUpdaterClick = onPrepareKeyUpdater
-                                )
+                            when (activeTab) {
+                                MainTab.VERIFY -> {
+                                    VerifyControlsCard(
+                                        selectedApks = selectedApks,
+                                        verificationState = verificationState,
+                                        strings = strings,
+                                        onOpenFilePicker = { onOpenFilePicker(MainTab.VERIFY) },
+                                        onRemoveSelectedApk = onRemoveSelectedApk,
+                                        onClearSelectedApks = onClearSelectedApks,
+                                        onVerifyClick = onVerifyClick
+                                    )
+                                }
+                                MainTab.RESIGN -> {
+                                    ResignControlsColumn(
+                                        selectedApks = resignSelectedApks,
+                                        selectedAospProfile = selectedAospProfile,
+                                        signingOptions = signingOptions,
+                                        signingState = signingState,
+                                        strings = strings,
+                                        onOpenFilePicker = { onOpenFilePicker(MainTab.RESIGN) },
+                                        onRemoveApk = onRemoveResignApk,
+                                        onClearApks = onClearResignApks,
+                                        onSelectAospProfile = onSelectAospProfile,
+                                        onUpdateOptions = onUpdateSigningOptions,
+                                        onSignWithAospClick = onSignWithAospClick,
+                                        onSignWithCustomClick = onOpenCustomKeyDialog,
+                                        onKeyUpdaterClick = onPrepareKeyUpdater
+                                    )
+                                }
+                                MainTab.PARTITION -> {
+                                    PartitionControlsCard(
+                                        selectedDirPath = partitionSelectedDir,
+                                        auditState = partitionAuditState,
+                                        resignState = partitionResignState,
+                                        strings = strings,
+                                        onOpenDirectoryPicker = { onOpenFilePicker(MainTab.PARTITION) },
+                                        onClearDir = onClearPartitionDir,
+                                        onVerifyPartition = onVerifyPartition,
+                                        onResignPartitionClick = onResignPartitionClick
+                                    )
+                                }
                             }
                         }
                         Column(
@@ -318,23 +362,34 @@ fun SignerScreen(
                                 .verticalScroll(rememberScrollState())
                                 .padding(vertical = 12.dp)
                         ) {
-                            if (activeTab == MainTab.VERIFY) {
-                                ResultsAreaContent(
-                                    verificationState = verificationState,
-                                    language = language,
-                                    strings = strings,
-                                    onSelectReportTab = onSelectReportTab,
-                                    onCopyText = onCopyText,
-                                    onExportTxt = onExportTxt,
-                                    onExportJson = onExportJson
-                                )
-                            } else {
-                                ResignResultsArea(
-                                    signingState = signingState,
-                                    strings = strings,
-                                    onInspectReport = onInspectSignedReport,
-                                    onSaveSignedApkAs = onSaveSignedApkAs
-                                )
+                            when (activeTab) {
+                                MainTab.VERIFY -> {
+                                    ResultsAreaContent(
+                                        verificationState = verificationState,
+                                        language = language,
+                                        strings = strings,
+                                        onSelectReportTab = onSelectReportTab,
+                                        onCopyText = onCopyText,
+                                        onExportTxt = onExportTxt,
+                                        onExportJson = onExportJson
+                                    )
+                                }
+                                MainTab.RESIGN -> {
+                                    ResignResultsArea(
+                                        signingState = signingState,
+                                        strings = strings,
+                                        onInspectReport = onInspectSignedReport,
+                                        onSaveSignedApkAs = onSaveSignedApkAs
+                                    )
+                                }
+                                MainTab.PARTITION -> {
+                                    PartitionDashboardArea(
+                                        auditState = partitionAuditState,
+                                        resignState = partitionResignState,
+                                        strings = strings,
+                                        onInspectApkReport = onInspectPartitionApkReport
+                                    )
+                                }
                             }
                         }
                     }
@@ -353,47 +408,68 @@ fun SignerScreen(
                             onActivateRoot = onRequestRootPermission,
                             onRefresh = onRefreshPermissions
                         )
-                        if (activeTab == MainTab.VERIFY) {
-                            VerifyControlsCard(
-                                selectedApks = selectedApks,
-                                verificationState = verificationState,
-                                strings = strings,
-                                onOpenFilePicker = { onOpenFilePicker(MainTab.VERIFY) },
-                                onRemoveSelectedApk = onRemoveSelectedApk,
-                                onClearSelectedApks = onClearSelectedApks,
-                                onVerifyClick = onVerifyClick
-                            )
-                            ResultsAreaContent(
-                                verificationState = verificationState,
-                                language = language,
-                                strings = strings,
-                                onSelectReportTab = onSelectReportTab,
-                                onCopyText = onCopyText,
-                                onExportTxt = onExportTxt,
-                                onExportJson = onExportJson
-                            )
-                        } else {
-                            ResignControlsColumn(
-                                selectedApks = resignSelectedApks,
-                                selectedAospProfile = selectedAospProfile,
-                                signingOptions = signingOptions,
-                                signingState = signingState,
-                                strings = strings,
-                                onOpenFilePicker = { onOpenFilePicker(MainTab.RESIGN) },
-                                onRemoveApk = onRemoveResignApk,
-                                onClearApks = onClearResignApks,
-                                onSelectAospProfile = onSelectAospProfile,
-                                onUpdateOptions = onUpdateSigningOptions,
-                                onSignWithAospClick = onSignWithAospClick,
-                                onSignWithCustomClick = onOpenCustomKeyDialog,
-                                onKeyUpdaterClick = onPrepareKeyUpdater
-                            )
-                            ResignResultsArea(
-                                signingState = signingState,
-                                strings = strings,
-                                onInspectReport = onInspectSignedReport,
-                                onSaveSignedApkAs = onSaveSignedApkAs
-                            )
+                        when (activeTab) {
+                            MainTab.VERIFY -> {
+                                VerifyControlsCard(
+                                    selectedApks = selectedApks,
+                                    verificationState = verificationState,
+                                    strings = strings,
+                                    onOpenFilePicker = { onOpenFilePicker(MainTab.VERIFY) },
+                                    onRemoveSelectedApk = onRemoveSelectedApk,
+                                    onClearSelectedApks = onClearSelectedApks,
+                                    onVerifyClick = onVerifyClick
+                                )
+                                ResultsAreaContent(
+                                    verificationState = verificationState,
+                                    language = language,
+                                    strings = strings,
+                                    onSelectReportTab = onSelectReportTab,
+                                    onCopyText = onCopyText,
+                                    onExportTxt = onExportTxt,
+                                    onExportJson = onExportJson
+                                )
+                            }
+                            MainTab.RESIGN -> {
+                                ResignControlsColumn(
+                                    selectedApks = resignSelectedApks,
+                                    selectedAospProfile = selectedAospProfile,
+                                    signingOptions = signingOptions,
+                                    signingState = signingState,
+                                    strings = strings,
+                                    onOpenFilePicker = { onOpenFilePicker(MainTab.RESIGN) },
+                                    onRemoveApk = onRemoveResignApk,
+                                    onClearApks = onClearResignApks,
+                                    onSelectAospProfile = onSelectAospProfile,
+                                    onUpdateOptions = onUpdateSigningOptions,
+                                    onSignWithAospClick = onSignWithAospClick,
+                                    onSignWithCustomClick = onOpenCustomKeyDialog,
+                                    onKeyUpdaterClick = onPrepareKeyUpdater
+                                )
+                                ResignResultsArea(
+                                    signingState = signingState,
+                                    strings = strings,
+                                    onInspectReport = onInspectSignedReport,
+                                    onSaveSignedApkAs = onSaveSignedApkAs
+                                )
+                            }
+                            MainTab.PARTITION -> {
+                                PartitionControlsCard(
+                                    selectedDirPath = partitionSelectedDir,
+                                    auditState = partitionAuditState,
+                                    resignState = partitionResignState,
+                                    strings = strings,
+                                    onOpenDirectoryPicker = { onOpenFilePicker(MainTab.PARTITION) },
+                                    onClearDir = onClearPartitionDir,
+                                    onVerifyPartition = onVerifyPartition,
+                                    onResignPartitionClick = onResignPartitionClick
+                                )
+                                PartitionDashboardArea(
+                                    auditState = partitionAuditState,
+                                    resignState = partitionResignState,
+                                    strings = strings,
+                                    onInspectApkReport = onInspectPartitionApkReport
+                                )
+                            }
                         }
                         Spacer(Modifier.height(16.dp))
                     }
@@ -453,6 +529,25 @@ fun SignerScreen(
             onDismiss = { showHelpDialog = false },
             onDownloadPdf = onDownloadApiPdf,
             onCopySnippet = onCopyText
+        )
+    }
+
+    if (showVerifyBeforeResignDialog) {
+        VerifyBeforeResignDialog(
+            strings = strings,
+            onDismiss = onDismissVerifyBeforeResign,
+            onVerifyNow = onVerifyFromGateDialog
+        )
+    }
+
+    val verifiedAudit = (partitionAuditState as? PartitionAuditUiState.Verified)?.report
+    if (showGsiResignStrategyDialog && verifiedAudit != null) {
+        GsiResignStrategyDialog(
+            auditReport = verifiedAudit,
+            vaultKeys = vaultKeys,
+            strings = strings,
+            onDismiss = onDismissGsiStrategyDialog,
+            onConfirmPlan = onExecuteGsiResignPlan
         )
     }
 }

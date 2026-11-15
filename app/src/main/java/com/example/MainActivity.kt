@@ -69,6 +69,11 @@ class MainActivity : ComponentActivity() {
                 val vaultKeys by viewModel.vaultKeys.collectAsStateWithLifecycle()
                 val showCustomKeyDialog by viewModel.showCustomKeyDialog.collectAsStateWithLifecycle()
                 val keyUpdaterSpec by viewModel.keyUpdaterSpec.collectAsStateWithLifecycle()
+                val partitionSelectedDir by viewModel.partitionSelectedDir.collectAsStateWithLifecycle()
+                val partitionAuditState by viewModel.partitionAuditState.collectAsStateWithLifecycle()
+                val partitionResignState by viewModel.partitionResignState.collectAsStateWithLifecycle()
+                val showVerifyBeforeResignDialog by viewModel.showVerifyBeforeResignDialog.collectAsStateWithLifecycle()
+                val showGsiResignStrategyDialog by viewModel.showGsiResignStrategyDialog.collectAsStateWithLifecycle()
                 val pendingExternal by viewModel.pendingExternalResult.collectAsStateWithLifecycle()
 
                 var pendingImportPasswords by remember { mutableStateOf("android" to "") }
@@ -249,6 +254,11 @@ class MainActivity : ComponentActivity() {
                     vaultKeys = vaultKeys,
                     showCustomKeyDialog = showCustomKeyDialog,
                     keyUpdaterSpec = keyUpdaterSpec,
+                    partitionSelectedDir = partitionSelectedDir,
+                    partitionAuditState = partitionAuditState,
+                    partitionResignState = partitionResignState,
+                    showVerifyBeforeResignDialog = showVerifyBeforeResignDialog,
+                    showGsiResignStrategyDialog = showGsiResignStrategyDialog,
                     shortcuts = remember { viewModel.getShortcutPaths() },
                     snackbarHostState = snackbarHostState,
                     onLanguageChange = viewModel::setLanguage,
@@ -348,7 +358,15 @@ class MainActivity : ComponentActivity() {
                         pendingSaveSignedResult = signedRes
                         val outName = File(signedRes.outputPath).name
                         saveSignedApkLauncher.launch(outName)
-                    }
+                    },
+                    onClearPartitionDir = viewModel::clearPartitionDir,
+                    onVerifyPartition = viewModel::verifyPartition,
+                    onResignPartitionClick = viewModel::onPartitionResignClick,
+                    onDismissVerifyBeforeResign = viewModel::dismissVerifyBeforeResignDialog,
+                    onVerifyFromGateDialog = viewModel::verifyFromGateDialog,
+                    onDismissGsiStrategyDialog = viewModel::dismissGsiStrategyDialog,
+                    onExecuteGsiResignPlan = viewModel::executeGsiResignPlan,
+                    onInspectPartitionApkReport = viewModel::inspectPartitionApkReport
                 )
             }
         }
