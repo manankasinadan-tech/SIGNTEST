@@ -22,13 +22,37 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Accept Android SDK licenses
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          fi
+
       - name: Prepare debug keystore & env
         run: |
-          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+          if [ ! -s debug.keystore ]; then
+            if [ -s debug.keystore.base64 ]; then
+              base64 -d debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storetype PKCS12 \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
           fi
-          if [ ! -f .env ] && [ -f .env.example ]; then
-            cp .env.example .env
+          ls -lh debug.keystore
+          if [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
           fi
 
       - name: Setup Gradle 9.3.1
@@ -37,10 +61,10 @@ jobs:
           gradle-version: 9.3.1
 
       - name: Run Unit & Robolectric Tests
-        run: gradle :app:testDebugUnitTest --stacktrace
+        run: gradle :app:testDebugUnitTest --no-configuration-cache --console=plain
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --stacktrace
+        run: gradle :app:assembleDebug --no-configuration-cache --console=plain
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
