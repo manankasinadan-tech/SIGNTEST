@@ -4,18 +4,30 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.crypto.AospKeyProvider
+import com.example.crypto.ApkReSigner
 import com.example.crypto.ApkSignatureAnalyzer
+import com.example.crypto.KeyCloner
+import com.example.crypto.KeystoreManager
 import com.example.crypto.ReportFormatter
 import com.example.data.FileBrowserRepository
 import com.example.data.LanguagePreferences
 import com.example.data.RootShellService
+import com.example.model.AospKeyProfile
 import com.example.model.ApkSourceType
 import com.example.model.ApkVerificationReport
 import com.example.model.AppLanguage
+import com.example.model.ClonedKeySpec
+import com.example.model.CustomKeyCreationSpec
 import com.example.model.FileEntry
+import com.example.model.MainTab
 import com.example.model.PermissionState
 import com.example.model.RootStatus
 import com.example.model.SelectedApkItem
+import com.example.model.SignedApkResult
+import com.example.model.SigningOptions
+import com.example.model.SigningUiState
+import com.example.model.StoredKeyEntry
 import com.example.model.VerificationUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,9 +64,15 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     private val languagePrefs = LanguagePreferences(application)
     private val fileRepo = FileBrowserRepository(application)
     private val analyzer = ApkSignatureAnalyzer(application)
+    private val aospKeyProvider = AospKeyProvider(application)
+    private val keystoreManager = KeystoreManager(application)
+    private val apkReSigner = ApkReSigner(application)
 
     val language: StateFlow<AppLanguage> = languagePrefs.languageFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppLanguage.FR)
+
+    private val _activeTab = MutableStateFlow(MainTab.VERIFY)
+    val activeTab: StateFlow<MainTab> = _activeTab.asStateFlow()
 
     private val _permissionState = MutableStateFlow(
         PermissionState(
@@ -67,6 +85,11 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     private val _selectedApks = MutableStateFlow<List<SelectedApkItem>>(emptyList())
     val selectedApks: StateFlow<List<SelectedApkItem>> = _selectedApks.asStateFlow()
 
+    private val _resignSelectedApks = MutableStateFlow<List<SelectedApkItem>>(emptyList())
+    val resignSelectedApks: StateFlow<List<SelectedApkItem>> = _resignSelectedApks.asStateFlow()
+
+    private var browserTargetTab: MainTab = MainTab.VERIFY
+
     private val _fileBrowserState = MutableStateFlow(
         FileBrowserState(currentPath = fileRepo.getDefaultInternalPath())
     )
@@ -75,8 +98,30 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     private val _verificationState = MutableStateFlow<VerificationUiState>(VerificationUiState.Idle)
     val verificationState: StateFlow<VerificationUiState> = _verificationState.asStateFlow()
 
+    private val _selectedAospProfile = MutableStateFlow(AospKeyProfile.TESTKEY)
+    val selectedAospProfile: StateFlow<AospKeyProfile> = _selectedAospProfile.asStateFlow()
+
+    private val _signingOptions = MutableStateFlow(SigningOptions())
+    val signingOptions: StateFlow<SigningOptions> = _signingOptions.asStateFlow()
+
+    private val _signingState = MutableStateFlow<SigningUiState>(SigningUiState.Idle)
+    val signingState: StateFlow<SigningUiState> = _signingState.asStateFlow()
+
+    private val _vaultKeys = MutableStateFlow(keystoreManager.listKeys())
+    val vaultKeys: StateFlow<List<StoredKeyEntry>> = _vaultKeys.asStateFlow()
+
+    private val _showCustomKeyDialog = MutableStateFlow(false)
+    val showCustomKeyDialog: StateFlow<Boolean> = _showCustomKeyDialog.asStateFlow()
+
+    private val _keyUpdaterSpec = MutableStateFlow<ClonedKeySpec?>(null)
+    val keyUpdaterSpec: StateFlow<ClonedKeySpec?> = _keyUpdaterSpec.asStateFlow()
+
     private val _pendingExternalResult = MutableStateFlow<PendingExternalCommandResult?>(null)
     val pendingExternalResult: StateFlow<PendingExternalCommandResult?> = _pendingExternalResult.asStateFlow()
+
+    fun setActiveTab(tab: MainTab) {
+        _activeTab.value = tab
+    }
 
     fun setLanguage(lang: AppLanguage) {
         viewModelScope.launch {
@@ -118,9 +163,15 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun openFileBrowser() {
+    fun openFileBrowser(forTab: MainTab = _activeTab.value) {
+        browserTargetTab = forTab
         refreshPermissions()
-        val preChecked = _selectedApks.value
+        val currentSelection = if (forTab == MainTab.RESIGN) {
+            _resignSelectedApks.value
+        } else {
+            _selectedApks.value
+        }
+        val preChecked = currentSelection
             .filter { it.sourceType != ApkSourceType.CONTENT_URI }
             .map { it.originalPath }
             .toSet()
@@ -216,8 +267,9 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun confirmBrowserSelection() {
         val state = _fileBrowserState.value
-        val existingUriItems = _selectedApks.value.filter { it.sourceType == ApkSourceType.CONTENT_URI }
-        val existingByPath = _selectedApks.value.associateBy { it.originalPath }
+        val targetFlow = if (browserTargetTab == MainTab.RESIGN) _resignSelectedApks else _selectedApks
+        val existingUriItems = targetFlow.value.filter { it.sourceType == ApkSourceType.CONTENT_URI }
+        val existingByPath = targetFlow.value.associateBy { it.originalPath }
 
         val pickedItems = state.checkedPaths.map { path ->
             val cached = state.cachedEntriesByPath[path]
@@ -246,7 +298,7 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        _selectedApks.value = (pickedItems + existingUriItems).distinctBy { it.id }
+        targetFlow.value = (pickedItems + existingUriItems).distinctBy { it.id }
         _fileBrowserState.update { it.copy(isOpen = false) }
     }
 
@@ -254,7 +306,8 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
         if (uris.isEmpty()) return
         viewModelScope.launch {
             val newItems = uris.mapNotNull { fileRepo.resolveUriToSelectedItem(it) }
-            _selectedApks.update { current ->
+            val targetFlow = if (browserTargetTab == MainTab.RESIGN) _resignSelectedApks else _selectedApks
+            targetFlow.update { current ->
                 (current + newItems).distinctBy { it.id }
             }
             _fileBrowserState.update { it.copy(isOpen = false) }
@@ -454,5 +507,280 @@ class SignerViewModel(application: Application) : AndroidViewModel(application) 
     fun buildJsonExportContent(): String? {
         val current = _verificationState.value as? VerificationUiState.Success ?: return null
         return ReportFormatter.formatJson(current.reports)
+    }
+
+    // --- Re-sign & Key Updater Actions ---
+
+    fun removeResignApk(id: String) {
+        _resignSelectedApks.update { list -> list.filterNot { it.id == id } }
+    }
+
+    fun clearResignApks() {
+        _resignSelectedApks.value = emptyList()
+        _signingState.value = SigningUiState.Idle
+    }
+
+    fun setSelectedAospProfile(profile: AospKeyProfile) {
+        _selectedAospProfile.value = profile
+    }
+
+    fun updateSigningOptions(options: SigningOptions) {
+        _signingOptions.value = options
+    }
+
+    fun signWithAospKey() {
+        val targets = _resignSelectedApks.value
+        if (targets.isEmpty()) return
+        val profile = _selectedAospProfile.value
+        val options = _signingOptions.value
+        viewModelScope.launch {
+            try {
+                val loaded = withContext(Dispatchers.IO) {
+                    aospKeyProvider.getAospKey(profile)
+                }
+                executeReSigning(
+                    targets = targets,
+                    privateKey = loaded.privateKey,
+                    certificates = listOf(loaded.certificate),
+                    signerLabel = profile.displayName,
+                    options = options
+                )
+            } catch (e: Exception) {
+                _signingState.value = SigningUiState.Error(e.message ?: "AOSP signing failed")
+            }
+        }
+    }
+
+    fun openCustomKeyDialog() {
+        _vaultKeys.value = keystoreManager.listKeys()
+        _showCustomKeyDialog.value = true
+    }
+
+    fun dismissCustomKeyDialog() {
+        _showCustomKeyDialog.value = false
+    }
+
+    fun createCustomKeyAndSign(spec: CustomKeyCreationSpec, onSavedMessage: () -> Unit) {
+        val targets = _resignSelectedApks.value
+        val options = _signingOptions.value
+        viewModelScope.launch {
+            try {
+                val (_, material) = withContext(Dispatchers.IO) {
+                    keystoreManager.createCustomKey(spec)
+                }
+                _vaultKeys.value = keystoreManager.listKeys()
+                if (spec.saveToVault) onSavedMessage()
+                _showCustomKeyDialog.value = false
+                if (targets.isNotEmpty()) {
+                    executeReSigning(
+                        targets = targets,
+                        privateKey = material.privateKey,
+                        certificates = material.certificates,
+                        signerLabel = material.displayName,
+                        options = options
+                    )
+                }
+            } catch (e: Exception) {
+                _signingState.value = SigningUiState.Error(e.message ?: "Custom key creation failed")
+            }
+        }
+    }
+
+    fun signWithVaultKey(entry: StoredKeyEntry, password: String) {
+        val targets = _resignSelectedApks.value
+        if (targets.isEmpty()) return
+        val options = _signingOptions.value
+        viewModelScope.launch {
+            try {
+                val material = withContext(Dispatchers.IO) {
+                    keystoreManager.loadKeyMaterial(entry, password)
+                }
+                _showCustomKeyDialog.value = false
+                executeReSigning(
+                    targets = targets,
+                    privateKey = material.privateKey,
+                    certificates = material.certificates,
+                    signerLabel = entry.alias,
+                    options = options
+                )
+            } catch (e: Exception) {
+                _signingState.value = SigningUiState.Error(e.message ?: "Failed to unlock keystore")
+            }
+        }
+    }
+
+    suspend fun importKeystoreFromUri(
+        uri: Uri,
+        storePassword: String,
+        keyPassword: String
+    ): Result<StoredKeyEntry> = withContext(Dispatchers.IO) {
+        runCatching {
+            val bytes = getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+                it.readBytes()
+            } ?: throw IllegalStateException("Cannot read selected keystore file")
+            val entry = keystoreManager.importExternalKeystore(
+                bytes = bytes,
+                storePassword = storePassword,
+                alias = null,
+                keyPassword = keyPassword
+            )
+            _vaultKeys.value = keystoreManager.listKeys()
+            entry
+        }
+    }
+
+    suspend fun exportVaultKeystoreToUri(entry: StoredKeyEntry, uri: Uri): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                getApplication<Application>().contentResolver.openOutputStream(uri)?.use { out ->
+                    keystoreManager.exportVaultKeystore(entry, out)
+                }
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+    fun deleteVaultKey(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            keystoreManager.deleteKey(id)
+            _vaultKeys.value = keystoreManager.listKeys()
+        }
+    }
+
+    fun prepareKeyUpdater() {
+        val target = _resignSelectedApks.value.firstOrNull() ?: return
+        viewModelScope.launch {
+            _signingState.value = SigningUiState.AnalyzingTarget(target.displayName)
+            val stagingDir = File(getApplication<Application>().cacheDir, "key_updater_staging")
+            try {
+                val cloneSpec = withContext(Dispatchers.IO) {
+                    val sessionDir = File(stagingDir, "target")
+                    val (readableFile, idsigFile) = fileRepo.prepareReadableApk(target, sessionDir)
+                    val report = analyzer.analyze(
+                        readableApkFile = readableFile,
+                        displayPath = target.originalPath,
+                        fallbackName = target.displayName,
+                        v4IdsigFile = idsigFile
+                    )
+                    KeyCloner.buildCloneSpecFromReport(report)
+                }
+                _signingState.value = SigningUiState.Idle
+                _keyUpdaterSpec.value = cloneSpec
+            } catch (e: Exception) {
+                _signingState.value = SigningUiState.Error(
+                    e.message ?: "Key updater failed to inspect target APK certificate"
+                )
+            } finally {
+                withContext(Dispatchers.IO) {
+                    stagingDir.deleteRecursively()
+                }
+            }
+        }
+    }
+
+    fun updateKeyUpdaterSpec(spec: ClonedKeySpec) {
+        _keyUpdaterSpec.value = spec
+    }
+
+    fun dismissKeyUpdater() {
+        _keyUpdaterSpec.value = null
+    }
+
+    fun saveClonedKeyToVaultOnly(spec: ClonedKeySpec, onSaved: (StoredKeyEntry) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val (entry, _) = withContext(Dispatchers.IO) {
+                    keystoreManager.createAndSaveClonedKey(spec)
+                }
+                _vaultKeys.value = keystoreManager.listKeys()
+                _keyUpdaterSpec.value = null
+                onSaved(entry)
+            } catch (e: Exception) {
+                _signingState.value = SigningUiState.Error(e.message ?: "Failed to save cloned key")
+            }
+        }
+    }
+
+    fun generateClonedKeyAndResign(spec: ClonedKeySpec) {
+        val targets = _resignSelectedApks.value
+        if (targets.isEmpty()) return
+        val options = SigningOptions(
+            signV1 = spec.signV1,
+            signV2 = spec.signV2,
+            signV3 = spec.signV3,
+            signV4 = spec.signV4,
+            zipAlign4 = _signingOptions.value.zipAlign4
+        )
+        viewModelScope.launch {
+            try {
+                val (entry, material) = withContext(Dispatchers.IO) {
+                    keystoreManager.createAndSaveClonedKey(spec)
+                }
+                _vaultKeys.value = keystoreManager.listKeys()
+                _keyUpdaterSpec.value = null
+                executeReSigning(
+                    targets = targets,
+                    privateKey = material.privateKey,
+                    certificates = material.certificates,
+                    signerLabel = "${entry.alias} (Key updater)",
+                    options = options
+                )
+            } catch (e: Exception) {
+                _signingState.value = SigningUiState.Error(e.message ?: "Key updater signing failed")
+            }
+        }
+    }
+
+    private suspend fun executeReSigning(
+        targets: List<SelectedApkItem>,
+        privateKey: java.security.PrivateKey,
+        certificates: List<java.security.cert.X509Certificate>,
+        signerLabel: String,
+        options: SigningOptions
+    ) {
+        val results = mutableListOf<SignedApkResult>()
+        val stagingDir = File(getApplication<Application>().cacheDir, "apk_staging")
+        try {
+            withContext(Dispatchers.IO) {
+                targets.forEachIndexed { idx, item ->
+                    _signingState.value = SigningUiState.Signing(
+                        currentIndex = idx + 1,
+                        totalCount = targets.size,
+                        currentFileName = item.displayName
+                    )
+                    val sessionDir = File(stagingDir, "resign_$idx")
+                    val (readableFile, _) = fileRepo.prepareReadableApk(item, sessionDir)
+                    val isWritableLocal = item.sourceType == ApkSourceType.LOCAL_FILE &&
+                        File(item.originalPath).parentFile?.canWrite() == true
+                    val res = apkReSigner.resignApk(
+                        readableInputApk = readableFile,
+                        sourceDisplayPath = item.originalPath,
+                        sourceDisplayName = item.displayName,
+                        isSourceWritableLocal = isWritableLocal,
+                        privateKey = privateKey,
+                        certificates = certificates,
+                        signerName = signerLabel,
+                        options = options
+                    )
+                    results += res
+                }
+            }
+            _signingState.value = SigningUiState.Success(results = results, signerLabel = signerLabel)
+        } catch (e: Exception) {
+            _signingState.value = SigningUiState.Error(e.message ?: "APK re-signing failed")
+        } finally {
+            withContext(Dispatchers.IO) {
+                fileRepo.clearStagingCache()
+            }
+        }
+    }
+
+    fun inspectSignedApkReport(result: SignedApkResult) {
+        _verificationState.value = VerificationUiState.Success(
+            reports = listOf(result.verificationReport),
+            selectedReportIndex = 0
+        )
+        _activeTab.value = MainTab.VERIFY
     }
 }

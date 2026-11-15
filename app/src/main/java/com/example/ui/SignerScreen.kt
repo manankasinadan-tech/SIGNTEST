@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SdStorage
@@ -39,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -46,6 +49,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -62,10 +66,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.model.AospKeyProfile
 import com.example.model.AppLanguage
+import com.example.model.ClonedKeySpec
+import com.example.model.CustomKeyCreationSpec
+import com.example.model.MainTab
 import com.example.model.PermissionState
 import com.example.model.RootStatus
 import com.example.model.SelectedApkItem
+import com.example.model.SignedApkResult
+import com.example.model.SigningOptions
+import com.example.model.SigningUiState
+import com.example.model.StoredKeyEntry
 import com.example.model.VerificationUiState
 import com.example.ui.theme.LocalSemanticColors
 
@@ -73,17 +85,26 @@ import com.example.ui.theme.LocalSemanticColors
 @Composable
 fun SignerScreen(
     language: AppLanguage,
+    activeTab: MainTab,
     permissionState: PermissionState,
     selectedApks: List<SelectedApkItem>,
+    resignSelectedApks: List<SelectedApkItem>,
     fileBrowserState: FileBrowserState,
     verificationState: VerificationUiState,
+    selectedAospProfile: AospKeyProfile,
+    signingOptions: SigningOptions,
+    signingState: SigningUiState,
+    vaultKeys: List<StoredKeyEntry>,
+    showCustomKeyDialog: Boolean,
+    keyUpdaterSpec: ClonedKeySpec?,
     shortcuts: Map<String, String>,
     snackbarHostState: SnackbarHostState,
     onLanguageChange: (AppLanguage) -> Unit,
+    onTabChange: (MainTab) -> Unit,
     onRequestStoragePermission: () -> Unit,
     onRequestRootPermission: () -> Unit,
     onRefreshPermissions: () -> Unit,
-    onOpenFilePicker: () -> Unit,
+    onOpenFilePicker: (MainTab) -> Unit,
     onDismissFilePicker: () -> Unit,
     onNavigateFolder: (String, Boolean?) -> Unit,
     onNavigateUp: () -> Unit,
@@ -101,10 +122,33 @@ fun SignerScreen(
     onCopyText: (String) -> Unit,
     onExportTxt: () -> Unit,
     onExportJson: () -> Unit,
-    onDownloadApiPdf: () -> Unit
+    onDownloadApiPdf: () -> Unit,
+    onRemoveResignApk: (String) -> Unit,
+    onClearResignApks: () -> Unit,
+    onSelectAospProfile: (AospKeyProfile) -> Unit,
+    onUpdateSigningOptions: (SigningOptions) -> Unit,
+    onSignWithAospClick: () -> Unit,
+    onOpenCustomKeyDialog: () -> Unit,
+    onDismissCustomKeyDialog: () -> Unit,
+    onCreateCustomKeyAndSign: (CustomKeyCreationSpec) -> Unit,
+    onSignWithVaultKey: (StoredKeyEntry, String) -> Unit,
+    onExportVaultKey: (StoredKeyEntry) -> Unit,
+    onDeleteVaultKey: (String) -> Unit,
+    onPickImportKeystoreFile: (storePassword: String, keyPassword: String) -> Unit,
+    onPrepareKeyUpdater: () -> Unit,
+    onUpdateKeyUpdaterSpec: (ClonedKeySpec) -> Unit,
+    onDismissKeyUpdater: () -> Unit,
+    onSaveClonedKeyOnly: (ClonedKeySpec) -> Unit,
+    onGenerateClonedAndResign: (ClonedKeySpec) -> Unit,
+    onInspectSignedReport: (SignedApkResult) -> Unit,
+    onSaveSignedApkAs: (SignedApkResult) -> Unit
 ) {
     val strings = stringsFor(language)
     var showHelpDialog by rememberSaveable { mutableStateOf(false) }
+
+    BackHandler(enabled = activeTab == MainTab.RESIGN) {
+        onTabChange(MainTab.VERIFY)
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -186,90 +230,173 @@ fun SignerScreen(
             )
         }
     ) { innerPadding ->
-        BoxWithConstraints(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp)
         ) {
-            val isExpanded = maxWidth >= 840.dp
+            PrimaryTabRow(
+                selectedTabIndex = if (activeTab == MainTab.VERIFY) 0 else 1,
+                containerColor = MaterialTheme.colorScheme.background
+            ) {
+                Tab(
+                    selected = activeTab == MainTab.VERIFY,
+                    onClick = { onTabChange(MainTab.VERIFY) },
+                    icon = { Icon(Icons.Filled.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    text = { Text(strings.tabVerify, maxLines = 1, softWrap = false) },
+                    modifier = Modifier.testTag("main_tab_verify")
+                )
+                Tab(
+                    selected = activeTab == MainTab.RESIGN,
+                    onClick = { onTabChange(MainTab.RESIGN) },
+                    icon = { Icon(Icons.Filled.Draw, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    text = { Text(strings.tabResign, maxLines = 1, softWrap = false) },
+                    modifier = Modifier.testTag("main_tab_resign")
+                )
+            }
 
-            if (isExpanded) {
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                val isExpanded = maxWidth >= 840.dp
+
+                if (isExpanded) {
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(0.44f)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            PermissionStripCard(
+                                permissionState = permissionState,
+                                strings = strings,
+                                onActivateStorage = onRequestStoragePermission,
+                                onActivateRoot = onRequestRootPermission,
+                                onRefresh = onRefreshPermissions
+                            )
+                            if (activeTab == MainTab.VERIFY) {
+                                VerifyControlsCard(
+                                    selectedApks = selectedApks,
+                                    verificationState = verificationState,
+                                    strings = strings,
+                                    onOpenFilePicker = { onOpenFilePicker(MainTab.VERIFY) },
+                                    onRemoveSelectedApk = onRemoveSelectedApk,
+                                    onClearSelectedApks = onClearSelectedApks,
+                                    onVerifyClick = onVerifyClick
+                                )
+                            } else {
+                                ResignControlsColumn(
+                                    selectedApks = resignSelectedApks,
+                                    selectedAospProfile = selectedAospProfile,
+                                    signingOptions = signingOptions,
+                                    signingState = signingState,
+                                    strings = strings,
+                                    onOpenFilePicker = { onOpenFilePicker(MainTab.RESIGN) },
+                                    onRemoveApk = onRemoveResignApk,
+                                    onClearApks = onClearResignApks,
+                                    onSelectAospProfile = onSelectAospProfile,
+                                    onUpdateOptions = onUpdateSigningOptions,
+                                    onSignWithAospClick = onSignWithAospClick,
+                                    onSignWithCustomClick = onOpenCustomKeyDialog,
+                                    onKeyUpdaterClick = onPrepareKeyUpdater
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier
+                                .weight(0.56f)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 12.dp)
+                        ) {
+                            if (activeTab == MainTab.VERIFY) {
+                                ResultsAreaContent(
+                                    verificationState = verificationState,
+                                    language = language,
+                                    strings = strings,
+                                    onSelectReportTab = onSelectReportTab,
+                                    onCopyText = onCopyText,
+                                    onExportTxt = onExportTxt,
+                                    onExportJson = onExportJson
+                                )
+                            } else {
+                                ResignResultsArea(
+                                    signingState = signingState,
+                                    strings = strings,
+                                    onInspectReport = onInspectSignedReport,
+                                    onSaveSignedApkAs = onSaveSignedApkAs
+                                )
+                            }
+                        }
+                    }
+                } else {
                     Column(
                         modifier = Modifier
-                            .weight(0.42f)
-                            .fillMaxHeight()
+                            .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(vertical = 12.dp),
+                            .padding(vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        ControlsColumnContent(
+                        PermissionStripCard(
                             permissionState = permissionState,
-                            selectedApks = selectedApks,
-                            verificationState = verificationState,
                             strings = strings,
-                            onRequestStoragePermission = onRequestStoragePermission,
-                            onRequestRootPermission = onRequestRootPermission,
-                            onRefreshPermissions = onRefreshPermissions,
-                            onOpenFilePicker = onOpenFilePicker,
-                            onRemoveSelectedApk = onRemoveSelectedApk,
-                            onClearSelectedApks = onClearSelectedApks,
-                            onVerifyClick = onVerifyClick
+                            onActivateStorage = onRequestStoragePermission,
+                            onActivateRoot = onRequestRootPermission,
+                            onRefresh = onRefreshPermissions
                         )
+                        if (activeTab == MainTab.VERIFY) {
+                            VerifyControlsCard(
+                                selectedApks = selectedApks,
+                                verificationState = verificationState,
+                                strings = strings,
+                                onOpenFilePicker = { onOpenFilePicker(MainTab.VERIFY) },
+                                onRemoveSelectedApk = onRemoveSelectedApk,
+                                onClearSelectedApks = onClearSelectedApks,
+                                onVerifyClick = onVerifyClick
+                            )
+                            ResultsAreaContent(
+                                verificationState = verificationState,
+                                language = language,
+                                strings = strings,
+                                onSelectReportTab = onSelectReportTab,
+                                onCopyText = onCopyText,
+                                onExportTxt = onExportTxt,
+                                onExportJson = onExportJson
+                            )
+                        } else {
+                            ResignControlsColumn(
+                                selectedApks = resignSelectedApks,
+                                selectedAospProfile = selectedAospProfile,
+                                signingOptions = signingOptions,
+                                signingState = signingState,
+                                strings = strings,
+                                onOpenFilePicker = { onOpenFilePicker(MainTab.RESIGN) },
+                                onRemoveApk = onRemoveResignApk,
+                                onClearApks = onClearResignApks,
+                                onSelectAospProfile = onSelectAospProfile,
+                                onUpdateOptions = onUpdateSigningOptions,
+                                onSignWithAospClick = onSignWithAospClick,
+                                onSignWithCustomClick = onOpenCustomKeyDialog,
+                                onKeyUpdaterClick = onPrepareKeyUpdater
+                            )
+                            ResignResultsArea(
+                                signingState = signingState,
+                                strings = strings,
+                                onInspectReport = onInspectSignedReport,
+                                onSaveSignedApkAs = onSaveSignedApkAs
+                            )
+                        }
+                        Spacer(Modifier.height(16.dp))
                     }
-                    Column(
-                        modifier = Modifier
-                            .weight(0.58f)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState())
-                            .padding(vertical = 12.dp)
-                    ) {
-                        ResultsAreaContent(
-                            verificationState = verificationState,
-                            language = language,
-                            strings = strings,
-                            onSelectReportTab = onSelectReportTab,
-                            onCopyText = onCopyText,
-                            onExportTxt = onExportTxt,
-                            onExportJson = onExportJson
-                        )
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    ControlsColumnContent(
-                        permissionState = permissionState,
-                        selectedApks = selectedApks,
-                        verificationState = verificationState,
-                        strings = strings,
-                        onRequestStoragePermission = onRequestStoragePermission,
-                        onRequestRootPermission = onRequestRootPermission,
-                        onRefreshPermissions = onRefreshPermissions,
-                        onOpenFilePicker = onOpenFilePicker,
-                        onRemoveSelectedApk = onRemoveSelectedApk,
-                        onClearSelectedApks = onClearSelectedApks,
-                        onVerifyClick = onVerifyClick
-                    )
-                    ResultsAreaContent(
-                        verificationState = verificationState,
-                        language = language,
-                        strings = strings,
-                        onSelectReportTab = onSelectReportTab,
-                        onCopyText = onCopyText,
-                        onExportTxt = onExportTxt,
-                        onExportJson = onExportJson
-                    )
-                    Spacer(Modifier.height(16.dp))
                 }
             }
         }
@@ -294,6 +421,31 @@ fun SignerScreen(
         )
     }
 
+    if (showCustomKeyDialog) {
+        CustomKeyVaultDialog(
+            vaultKeys = vaultKeys,
+            hasTargetApks = resignSelectedApks.isNotEmpty(),
+            strings = strings,
+            onDismiss = onDismissCustomKeyDialog,
+            onSignWithVaultKey = onSignWithVaultKey,
+            onExportVaultKey = onExportVaultKey,
+            onDeleteVaultKey = onDeleteVaultKey,
+            onCreateCustomKey = onCreateCustomKeyAndSign,
+            onPickImportKeystoreFile = onPickImportKeystoreFile
+        )
+    }
+
+    if (keyUpdaterSpec != null) {
+        KeyUpdaterDialog(
+            spec = keyUpdaterSpec,
+            strings = strings,
+            onUpdateSpec = onUpdateKeyUpdaterSpec,
+            onDismiss = onDismissKeyUpdater,
+            onSaveKeyOnly = onSaveClonedKeyOnly,
+            onGenerateAndResign = onGenerateClonedAndResign
+        )
+    }
+
     if (showHelpDialog) {
         HelpDocumentationDialog(
             language = language,
@@ -307,26 +459,15 @@ fun SignerScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ControlsColumnContent(
-    permissionState: PermissionState,
+private fun VerifyControlsCard(
     selectedApks: List<SelectedApkItem>,
     verificationState: VerificationUiState,
     strings: UiStrings,
-    onRequestStoragePermission: () -> Unit,
-    onRequestRootPermission: () -> Unit,
-    onRefreshPermissions: () -> Unit,
     onOpenFilePicker: () -> Unit,
     onRemoveSelectedApk: (String) -> Unit,
     onClearSelectedApks: () -> Unit,
     onVerifyClick: () -> Unit
 ) {
-    PermissionStripCard(
-        permissionState = permissionState,
-        strings = strings,
-        onActivateStorage = onRequestStoragePermission,
-        onActivateRoot = onRequestRootPermission,
-        onRefresh = onRefreshPermissions
-    )
 
     Surface(
         shape = MaterialTheme.shapes.large,

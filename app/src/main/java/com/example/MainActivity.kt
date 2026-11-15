@@ -20,8 +20,10 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -30,6 +32,8 @@ import com.example.api.DocumentationPdfGenerator
 import com.example.api.SignerApiContract
 import com.example.crypto.ReportFormatter
 import com.example.model.AppLanguage
+import com.example.model.SignedApkResult
+import com.example.model.StoredKeyEntry
 import com.example.ui.SignerScreen
 import com.example.ui.SignerViewModel
 import com.example.ui.stringsFor
@@ -37,6 +41,8 @@ import com.example.ui.theme.SignerLabTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileInputStream
 
 class MainActivity : ComponentActivity() {
 
@@ -51,11 +57,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             SignerLabTheme {
                 val language by viewModel.language.collectAsStateWithLifecycle()
+                val activeTab by viewModel.activeTab.collectAsStateWithLifecycle()
                 val permissionState by viewModel.permissionState.collectAsStateWithLifecycle()
                 val selectedApks by viewModel.selectedApks.collectAsStateWithLifecycle()
+                val resignSelectedApks by viewModel.resignSelectedApks.collectAsStateWithLifecycle()
                 val fileBrowserState by viewModel.fileBrowserState.collectAsStateWithLifecycle()
                 val verificationState by viewModel.verificationState.collectAsStateWithLifecycle()
+                val selectedAospProfile by viewModel.selectedAospProfile.collectAsStateWithLifecycle()
+                val signingOptions by viewModel.signingOptions.collectAsStateWithLifecycle()
+                val signingState by viewModel.signingState.collectAsStateWithLifecycle()
+                val vaultKeys by viewModel.vaultKeys.collectAsStateWithLifecycle()
+                val showCustomKeyDialog by viewModel.showCustomKeyDialog.collectAsStateWithLifecycle()
+                val keyUpdaterSpec by viewModel.keyUpdaterSpec.collectAsStateWithLifecycle()
                 val pendingExternal by viewModel.pendingExternalResult.collectAsStateWithLifecycle()
+
+                var pendingImportPasswords by remember { mutableStateOf("android" to "") }
+                var pendingExportKeyEntry by remember { mutableStateOf<StoredKeyEntry?>(null) }
+                var pendingSaveSignedResult by remember { mutableStateOf<SignedApkResult?>(null) }
 
                 val strings = stringsFor(language)
                 val snackbarHostState = remember { SnackbarHostState() }
@@ -163,15 +181,78 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val importKeystoreLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    if (uri != null) {
+                        val (storePass, keyPass) = pendingImportPasswords
+                        scope.launch {
+                            val res = viewModel.importKeystoreFromUri(uri, storePass, keyPass)
+                            res.fold(
+                                onSuccess = {
+                                    snackbarHostState.showSnackbar(strings.keystoreSavedToast)
+                                },
+                                onFailure = { err ->
+                                    snackbarHostState.showSnackbar(err.message ?: "Import failed")
+                                }
+                            )
+                        }
+                    }
+                }
+
+                val exportKeystoreLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("application/x-pkcs12")
+                ) { uri ->
+                    val entry = pendingExportKeyEntry
+                    pendingExportKeyEntry = null
+                    if (uri != null && entry != null) {
+                        scope.launch {
+                            val ok = viewModel.exportVaultKeystoreToUri(entry, uri)
+                            if (ok) snackbarHostState.showSnackbar(strings.keystoreExportedToast)
+                        }
+                    }
+                }
+
+                val saveSignedApkLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")
+                ) { uri ->
+                    val signedRes = pendingSaveSignedResult
+                    pendingSaveSignedResult = null
+                    if (uri != null && signedRes != null) {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                val srcFile = File(signedRes.outputPath)
+                                if (srcFile.exists()) {
+                                    contentResolver.openOutputStream(uri)?.use { out ->
+                                        FileInputStream(srcFile).use { input ->
+                                            input.copyTo(out, bufferSize = 64 * 1024)
+                                        }
+                                    }
+                                }
+                            }
+                            snackbarHostState.showSnackbar(strings.exportedToast)
+                        }
+                    }
+                }
+
                 SignerScreen(
                     language = language,
+                    activeTab = activeTab,
                     permissionState = permissionState,
                     selectedApks = selectedApks,
+                    resignSelectedApks = resignSelectedApks,
                     fileBrowserState = fileBrowserState,
                     verificationState = verificationState,
+                    selectedAospProfile = selectedAospProfile,
+                    signingOptions = signingOptions,
+                    signingState = signingState,
+                    vaultKeys = vaultKeys,
+                    showCustomKeyDialog = showCustomKeyDialog,
+                    keyUpdaterSpec = keyUpdaterSpec,
                     shortcuts = remember { viewModel.getShortcutPaths() },
                     snackbarHostState = snackbarHostState,
                     onLanguageChange = viewModel::setLanguage,
+                    onTabChange = viewModel::setActiveTab,
                     onRequestStoragePermission = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                             try {
@@ -228,6 +309,45 @@ class MainActivity : ComponentActivity() {
                     },
                     onDownloadApiPdf = {
                         exportPdfLauncher.launch("SignerLAB_API_Documentation_${language.code.uppercase()}.pdf")
+                    },
+                    onRemoveResignApk = viewModel::removeResignApk,
+                    onClearResignApks = viewModel::clearResignApks,
+                    onSelectAospProfile = viewModel::setSelectedAospProfile,
+                    onUpdateSigningOptions = viewModel::updateSigningOptions,
+                    onSignWithAospClick = viewModel::signWithAospKey,
+                    onOpenCustomKeyDialog = viewModel::openCustomKeyDialog,
+                    onDismissCustomKeyDialog = viewModel::dismissCustomKeyDialog,
+                    onCreateCustomKeyAndSign = { spec ->
+                        viewModel.createCustomKeyAndSign(spec) {
+                            scope.launch { snackbarHostState.showSnackbar(strings.keystoreSavedToast) }
+                        }
+                    },
+                    onSignWithVaultKey = viewModel::signWithVaultKey,
+                    onExportVaultKey = { entry ->
+                        pendingExportKeyEntry = entry
+                        exportKeystoreLauncher.launch("${entry.alias}.p12")
+                    },
+                    onDeleteVaultKey = viewModel::deleteVaultKey,
+                    onPickImportKeystoreFile = { storePass, keyPass ->
+                        pendingImportPasswords = storePass to keyPass
+                        importKeystoreLauncher.launch(
+                            arrayOf("application/x-pkcs12", "application/octet-stream", "*/*")
+                        )
+                    },
+                    onPrepareKeyUpdater = viewModel::prepareKeyUpdater,
+                    onUpdateKeyUpdaterSpec = viewModel::updateKeyUpdaterSpec,
+                    onDismissKeyUpdater = viewModel::dismissKeyUpdater,
+                    onSaveClonedKeyOnly = { spec ->
+                        viewModel.saveClonedKeyToVaultOnly(spec) {
+                            scope.launch { snackbarHostState.showSnackbar(strings.keystoreSavedToast) }
+                        }
+                    },
+                    onGenerateClonedAndResign = viewModel::generateClonedKeyAndResign,
+                    onInspectSignedReport = viewModel::inspectSignedApkReport,
+                    onSaveSignedApkAs = { signedRes ->
+                        pendingSaveSignedResult = signedRes
+                        val outName = File(signedRes.outputPath).name
+                        saveSignedApkLauncher.launch(outName)
                     }
                 )
             }

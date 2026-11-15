@@ -72,8 +72,9 @@ class ApkSignatureAnalyzer(private val context: Context) {
             result.sourceStampInfo != null
 
         // 6. Independent cryptographic verification for V1 and V2 even when minSdk >= 28 (e.g. API 36)
+        val effectiveMinSdk = pkgMeta.minSdk ?: manifestInfo.minSdk ?: 1
         val independentV1 = if (hasV1Present && !result.isVerifiedUsingV1Scheme) {
-            verifyV1Independently(readableApkFile)
+            verifyV1Independently(readableApkFile, effectiveMinSdk)
         } else null
 
         val independentV2 = if (hasV2Present && !result.isVerifiedUsingV2Scheme) {
@@ -420,30 +421,46 @@ class ApkSignatureAnalyzer(private val context: Context) {
         val warnings: List<String>
     )
 
-    private fun verifyV1Independently(apkFile: File): IndependentV1Outcome? {
+    private fun verifyV1Independently(apkFile: File, apkMinSdk: Int): IndependentV1Outcome? {
         return try {
             RandomAccessFile(apkFile, "r").use { raf ->
                 val ds = DataSources.asDataSource(raf)
                 val zipSections = ApkUtils.findZipSections(ds)
                 val contentDigests = HashMap<Int, String>()
                 val supportedSchemes = HashSet<Int>()
+                val v1MinSdk = apkMinSdk.coerceIn(1, 23)
                 val v1Res = V1SchemeVerifier.verify(
                     ds,
                     zipSections,
                     contentDigests,
                     supportedSchemes,
-                    1,
+                    v1MinSdk,
                     23
                 )
+                val allErrors = buildList {
+                    v1Res.errors.forEach { add(it.toString()) }
+                    v1Res.signers.forEach { s -> s.errors.forEach { add("${s.name}: $it") } }
+                    v1Res.ignoredSigners.forEach { s -> s.errors.forEach { add("${s.name} (ignored): $it") } }
+                }
+                val allWarnings = buildList {
+                    v1Res.warnings.forEach { add(it.toString()) }
+                    v1Res.signers.forEach { s -> s.warnings.forEach { add("${s.name}: $it") } }
+                    v1Res.ignoredSigners.forEach { s -> s.warnings.forEach { add("${s.name} (ignored): $it") } }
+                }
                 IndependentV1Outcome(
                     verified = v1Res.verified,
                     signers = v1Res.signers,
-                    errors = v1Res.errors.map { it.toString() },
-                    warnings = v1Res.warnings.map { it.toString() }
+                    errors = allErrors,
+                    warnings = allWarnings
                 )
             }
-        } catch (_: Exception) {
-            null
+        } catch (e: Exception) {
+            IndependentV1Outcome(
+                verified = false,
+                signers = emptyList(),
+                errors = listOf("V1 independent verify exception: ${e.javaClass.simpleName}: ${e.message}"),
+                warnings = emptyList()
+            )
         }
     }
 
@@ -521,13 +538,24 @@ class ApkSignatureAnalyzer(private val context: Context) {
             } else {
                 PackageManager.GET_SIGNATURES or PackageManager.GET_META_DATA
             }
-            val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                pm.getPackageArchiveInfo(
-                    apkFile.absolutePath,
-                    PackageManager.PackageInfoFlags.of(flags.toLong())
-                )
-            } else {
-                pm.getPackageArchiveInfo(apkFile.absolutePath, flags)
+            val pkgInfo = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageArchiveInfo(
+                        apkFile.absolutePath,
+                        PackageManager.PackageInfoFlags.of(flags.toLong())
+                    )
+                } else {
+                    pm.getPackageArchiveInfo(apkFile.absolutePath, flags)
+                }
+            } catch (_: Throwable) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageArchiveInfo(
+                        apkFile.absolutePath,
+                        PackageManager.PackageInfoFlags.of(0L)
+                    )
+                } else {
+                    pm.getPackageArchiveInfo(apkFile.absolutePath, 0)
+                }
             }
 
             if (pkgInfo == null) {
@@ -580,7 +608,7 @@ class ApkSignatureAnalyzer(private val context: Context) {
                 isDebuggable = isDebuggable,
                 fallbackCertificates = fallbackCerts
             )
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             PackageMetadata(fallbackName, null, null, null, null, null, null, emptyList())
         }
     }
